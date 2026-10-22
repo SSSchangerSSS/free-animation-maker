@@ -54,11 +54,12 @@ function renameTracks(clips: THREE.AnimationClip[], map: Map<string, string>) {
 
 // ── تشخیص استخوان‌های هیومنوید ───────────────────────────────
 function matchCanonical(rawNorm: string): string | null {
-  const s = rawNorm.replace(/^mixamorig/, '');
+  // Rigify: پیشوند DEF-/ORG-/MCH- حذف می‌شود
+  let s = rawNorm.replace(/^mixamorig/, '').replace(/^(def|org|mch|ctl)/, '');
   const simple: Record<string, string> = {
     hips: 'hips', pelvis: 'hips', hip: 'hips', root: 'hips',
     spine: 'spine', spine1: 'chest', spine2: 'chest', chest: 'chest', upperchest: 'chest',
-    neck: 'neck', head: 'head',
+    torso: 'spine', neck: 'neck', head: 'head',
   };
   if (simple[s]) return simple[s];
 
@@ -75,7 +76,7 @@ function matchCanonical(rawNorm: string): string | null {
   if (!side) return null;
 
   const map: Record<string, string> = {
-    arm: 'upperArm', upperarm: 'upperArm', uparm: 'upperArm',
+    arm: 'upperArm', upperarm: 'upperArm', uparm: 'upperArm', shoulder: 'upperArm',
     forearm: 'lowerArm', lowerarm: 'lowerArm', elbow: 'lowerArm',
     hand: 'hand',
     upleg: 'upperLeg', upperleg: 'upperLeg', thigh: 'upperLeg', legupper: 'upperLeg',
@@ -95,7 +96,7 @@ export interface BoneMapping {
 }
 
 export function detectHumanoidBones(root: THREE.Object3D): BoneMapping {
-  const target: Record<string, THREE.Bone> = {};
+  const candidates: Record<string, THREE.Bone[]> = {};
   let boneCount = 0;
   root.traverse((o) => {
     if (!(o as THREE.Bone).isBone) return;
@@ -103,8 +104,13 @@ export function detectHumanoidBones(root: THREE.Object3D): BoneMapping {
     // ارقام حفظ می‌شوند تا Spine1 با Spine اشتباه نشود
     const norm = o.name.toLowerCase().replace(/[^a-z0-9]/g, '');
     const canon = matchCanonical(norm);
-    if (canon && !target[canon]) target[canon] = o as THREE.Bone;
+    if (canon) (candidates[canon] ??= []).push(o as THREE.Bone);
   });
+  // حل تعارض: نام دقیق بر ریشه/root مقدم است
+  const target: Record<string, THREE.Bone> = {};
+  for (const [canon, list] of Object.entries(candidates)) {
+    target[canon] = list.find((b) => b.name.toLowerCase().replace(/[^a-z0-9]/g, '').replace(/^(def|org|mch|ctl)/, '') === canon) ?? list[0];
+  }
   const found = Object.keys(target);
   const missing = BONE_ORDER.filter((b) => !target[b]);
   return { target, found, missing, boneCount };
@@ -307,6 +313,174 @@ export function retargetClipCustom(
   return new THREE.AnimationClip(sourceClip.name || 'retargeted', dur, outTracks);
 }
 
+// ── ریتارگت عمومی (مبدأ با rest واقعی — مثل UAL/Rigify) ─────
+export interface SourceRest {
+  /** canonical → چرخش جهانی استخوان مبدأ در پوز مرجع */
+  worldQuat: Record<string, THREE.Quaternion>;
+  /** canonical → نام نود نرمال‌شده‌ی مبدأ */
+  canonToNode: Record<string, string>;
+  /** نام نود لگن مبدأ (برای track موقعیت) */
+  hipsNode: string;
+  /** ارتفاع جهانی لگن مبدأ در rest */
+  hipsWorldY: number;
+}
+
+export function normName(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]/g, '').replace(/^(def|org|mch|ctl)/, '');
+}
+
+export function measureSourceRest(root: THREE.Object3D, hipsNode: string): SourceRest {
+  root.updateMatrixWorld(true);
+  const worldQuat: Record<string, THREE.Quaternion> = {};
+  const canonToNode: Record<string, string> = {};
+  let hipsWorldY = 1;
+  root.traverse((o) => {
+    if (!(o as THREE.Bone).isBone) return;
+    const norm = normName(o.name);
+    const canon = matchCanonical(norm);
+    if (!canon || worldQuat[canon]) return;
+    worldQuat[canon] = new THREE.Quaternion();
+    o.matrixWorld.decompose(new THREE.Vector3(), worldQuat[canon], new THREE.Vector3());
+    canonToNode[canon] = norm;
+    if (norm === normName(hipsNode)) {
+      o.getWorldPosition(_hipsP);
+      hipsWorldY = _hipsP.y;
+    }
+  });
+  return { worldQuat, canonToNode, hipsNode, hipsWorldY };
+}
+const _hipsP = new THREE.Vector3();
+
+export function retargetClipFromRest(
+  sourceClip: THREE.AnimationClip,
+  srcRest: SourceRest,
+  mapping: BoneMapping,
+  rest: TargetRest,
+): THREE.AnimationClip {
+  const dur = sourceClip.duration;
+  const nFrames = Math.max(2, Math.ceil(dur * 30) + 1);
+  const dt = dur / (nFrames - 1);
+
+  const srcQ: Record<string, THREE.QuaternionKeyframeTrack> = {};
+  let hipsTrack: THREE.VectorKeyframeTrack | null = null;
+  const hipsNorm = normName(srcRest.hipsNode);
+  for (const tr of sourceClip.tracks) {
+    // نام نود ممکن است نقطه داشته باشد (Rigify: DEF-upper_arm.L) ⇒ آخرین نقطه جداکننده است
+    const dot = tr.name.lastIndexOf('.');
+    const node = normName(dot > 0 ? tr.name.slice(0, dot) : tr.name);
+    if (tr instanceof THREE.QuaternionKeyframeTrack) srcQ[node] = tr;
+    else if (node === hipsNorm && tr instanceof THREE.VectorKeyframeTrack) hipsTrack = tr;
+  }
+
+  const canons = Object.keys(mapping.target).sort(
+    (a, b) => (BONE_DEPTH[a as keyof typeof BONE_DEPTH] ?? 0) - (BONE_DEPTH[b as keyof typeof BONE_DEPTH] ?? 0),
+  );
+
+  const qLocal = new THREE.Quaternion();
+  const qWorldT = new THREE.Quaternion();   // world(t) مبدأ
+  const qDelta = new THREE.Quaternion();    // world(t) · worldRest⁻¹
+  const parentWorldT = new THREE.Quaternion();
+  const desired = new THREE.Quaternion();
+  const parentTgt = new THREE.Quaternion();
+  const local = new THREE.Quaternion();
+  const I = new THREE.Quaternion();
+
+  // والد canonical مبدأ — با ترتیب FK روی canons مقصد نمی‌سازد؛
+  // ما world مبدأ را مستقل به‌صورت top-down روی درخت مقصد حساب می‌کنیم.
+  const srcParentCanon: Record<string, string | null> = {};
+  const BONE_PARENT: Record<string, string | null> = {
+    spine: 'hips', chest: 'spine', neck: 'chest', head: 'neck',
+    upperArmL: 'chest', lowerArmL: 'upperArmL', handL: 'lowerArmL',
+    upperArmR: 'chest', lowerArmR: 'upperArmR', handR: 'lowerArmR',
+    upperLegL: 'hips', lowerLegL: 'upperLegL', footL: 'lowerLegL',
+    upperLegR: 'hips', lowerLegR: 'upperLegR', footR: 'lowerLegR',
+  };
+  for (const c of canons) {
+    let p = BONE_PARENT[c] ?? null;
+    while (p && !srcRest.worldQuat[p]) p = BONE_PARENT[p] ?? null;
+    srcParentCanon[c] = p;
+  }
+
+  const outTracks: THREE.KeyframeTrack[] = [];
+
+  for (const canon of canons) {
+    const bone = mapping.target[canon];
+    const track = srcRest.canonToNode[canon] ? srcQ[srcRest.canonToNode[canon]] : undefined;
+    const times = new Float32Array(nFrames);
+    const values = new Float32Array(nFrames * 4);
+
+    for (let f = 0; f < nFrames; f++) {
+      const t = f * dt;
+      times[f] = t;
+
+      if (track) {
+        sampleQuat(track, t, qLocal);
+      } else {
+        // track مفقود ⇒ rest محلی مبدأ (نه identity) تا دلتا صفر بماند
+        const rpc = srcParentCanon[canon];
+        const prw = rpc ? srcRest.worldQuat[rpc] : undefined;
+        if (prw && srcRest.worldQuat[canon]) {
+          qLocal.copy(_qTmp.copy(prw).invert()).multiply(srcRest.worldQuat[canon]);
+        } else if (srcRest.worldQuat[canon]) {
+          qLocal.copy(srcRest.worldQuat[canon]);
+        } else {
+          qLocal.identity();
+        }
+      }
+
+      // world مبدأ top-down: world(t) = parentWorld(t) · local(t)
+      const pc = srcParentCanon[canon];
+      if (pc && qWorldT_set[pc]) {
+        parentWorldT.copy(qWorldT_set[pc]);
+      } else parentWorldT.identity();
+      qWorldT.copy(parentWorldT).multiply(qLocal);
+      qWorldT_set[canon] = qWorldT.clone();
+
+      // دلتا نسبت به rest مبدأ
+      qDelta.copy(qWorldT).multiply(_qTmp.copy(srcRest.worldQuat[canon] ?? I).invert());
+
+      // اعمال روی rest مقصد
+      desired.copy(qDelta).multiply(rest.worldQuat[canon] ?? I);
+      const tpc = rest.parentCanon[canon] ?? null;
+      if (tpc && qTgt_set[tpc]) parentTgt.copy(qTgt_set[tpc]);
+      else parentTgt.identity();
+      local.copy(parentTgt).invert().multiply(desired);
+      qTgt_set[canon] = desired.clone();
+
+      values[f * 4] = local.x; values[f * 4 + 1] = local.y;
+      values[f * 4 + 2] = local.z; values[f * 4 + 3] = local.w;
+    }
+    outTracks.push(new THREE.QuaternionKeyframeTrack(
+      `${bone.name}.quaternion`, Array.from(times), Array.from(values),
+    ));
+  }
+
+  // ── موقعیت لگن مبدأ ──
+  if (hipsTrack && mapping.target.hips) {
+    const hipsRest = rest.hipsLocalRest.clone();
+    const ratio = rest.hipsWorldY / Math.max(0.01, srcRest.hipsWorldY);
+    const times = new Float32Array(nFrames);
+    const values = new Float32Array(nFrames * 3);
+    const p = new THREE.Vector3();
+    for (let f = 0; f < nFrames; f++) {
+      const t = f * dt;
+      times[f] = t;
+      sampleVec(hipsTrack, t, p);
+      values[f * 3] = hipsRest.x + p.x * ratio;
+      values[f * 3 + 1] = hipsRest.y + (p.y - srcRest.hipsWorldY) * ratio;
+      values[f * 3 + 2] = hipsRest.z + p.z * ratio;
+    }
+    outTracks.push(new THREE.VectorKeyframeTrack(
+      `${mapping.target.hips.name}.position`, Array.from(times), Array.from(values),
+    ));
+  }
+
+  return new THREE.AnimationClip(sourceClip.name || 'retargeted', dur, outTracks);
+}
+const _qTmp = new THREE.Quaternion();
+const qWorldT_set: Record<string, THREE.Quaternion> = {};
+const qTgt_set: Record<string, THREE.Quaternion> = {};
+
 // ── Import کامل ──────────────────────────────────────────────
 export interface ImportedClipDef {
   id: string;
@@ -324,7 +498,18 @@ export interface ImportedModel {
   dispose: () => void;
 }
 
-export async function importExternalModel(buffer: ArrayBuffer): Promise<ImportedModel> {
+export interface LibraryClipDef {
+  id: string;
+  label: string;
+  loop: boolean;
+  clip: THREE.AnimationClip;
+}
+
+export async function importExternalModel(
+  buffer: ArrayBuffer,
+  library?: LibraryClipDef[],
+  onProgress?: (done: number, total: number) => void,
+): Promise<ImportedModel> {
   const loader = new GLTFLoader();
   try {
     const draco = new DRACOLoader();
@@ -366,16 +551,34 @@ export async function importExternalModel(buffer: ArrayBuffer): Promise<Imported
   // پوز مرجع (قبل از هر انیمیشنی)
   const rest = measureRest(wrapper, mapping);
 
-  // ریتارگت کتابخانه
+  // ریتارگت کتابخانه (کل رجیستری مادر یا پیش‌فرض رویه‌ای)
   const clips: ImportedClipDef[] = [];
   if (ok) {
-    const lib = buildClipLibrary();
-    for (const def of ANIM_DEFS) {
-      try {
-        const rc = retargetClipCustom(lib[def.id], mapping, rest);
-        clips.push({ id: def.id, label: def.label, clip: rc, loop: def.loop, origin: 'library' });
-      } catch (e) {
-        console.error('retarget fail', def.id, e);
+    let done = 0;
+    if (library && library.length > 0) {
+      for (const item of library) {
+        try {
+          const rc = retargetClipCustom(item.clip, mapping, rest);
+          clips.push({ id: item.id, label: item.label, clip: rc, loop: item.loop, origin: 'library' });
+        } catch (e) {
+          console.error('retarget fail', item.id, e);
+        }
+        done++;
+        if (done % 10 === 0) {
+          onProgress?.(done, library.length);
+          await new Promise((r) => setTimeout(r, 0));
+        }
+      }
+      onProgress?.(library.length, library.length);
+    } else {
+      const lib = buildClipLibrary();
+      for (const def of ANIM_DEFS) {
+        try {
+          const rc = retargetClipCustom(lib[def.id], mapping, rest);
+          clips.push({ id: def.id, label: def.label, clip: rc, loop: def.loop, origin: 'library' });
+        } catch (e) {
+          console.error('retarget fail', def.id, e);
+        }
       }
     }
   }

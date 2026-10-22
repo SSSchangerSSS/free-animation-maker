@@ -1,156 +1,137 @@
 // ─────────────────────────────────────────────────────────────
-// Character Creator — Types, Race presets, Color palettes
-// استاندارد مشترک برای همه نژادها (سازگار با ریتارگت Mixamo / гуманоید)
+// Character Creator V2 — پیکربندی شخصیت روی بدنه‌های KayKit
+// نژاد = ویژگی‌های نژادی + بدنه‌های مجاز — بدنه = مدل KayKit
 // ─────────────────────────────────────────────────────────────
+import type { BodyId } from './kaykit';
+import type { HairStyleId, BeardStyleId } from './featuresKaykit';
 
-import type { WeaponId } from './weapons';
+export type { BodyId, HairStyleId, BeardStyleId };
 
-export type { WeaponId };
-export { WEAPONS } from './weapons';
-
-export type RaceId = 'human' | 'elf' | 'orc' | 'dwarf';
-export type HairId = 'none' | 'short' | 'long' | 'ponytail' | 'mohawk';
-export type BeardId = 'none' | 'stubble' | 'full' | 'long';
+export type RaceId = 'human' | 'elf' | 'orc' | 'dwarf' | 'undead';
 
 export interface CharConfig {
   name: string;
   race: RaceId;
+  body: BodyId;
   skin: string;
-  hair: HairId;
+  hair: HairStyleId;
   hairColor: string;
-  beard: BeardId;
+  beard: BeardStyleId;
   beardColor: string;
-  eyes: string;
-  weapon: WeaponId;
-  outfit: string;
-  pants: string;
-  boots: string;
+  ears: boolean;
+  tusks: boolean;
+  cloth: string;
   metal: string;
-  height: number; // 0.9 – 1.15
-  bulk: number;   // 0.85 – 1.3
+  bone: string;
+  weapon: string;
+  helmet: boolean;
+  cape: boolean;
+  height: number; // 0.72 – 1.12
+  bulk: number;   // 0.85 – 1.25 (پهنای XZ)
 }
 
 export interface RacePreset {
   id: RaceId;
   label: string;
   desc: string;
-  width: number;                       // ضریب پهنای هندسه
-  boneScales: Record<string, number>;  // مقیاس یکنواخت استخوان‌ها (بدون برش/shear)
-  headShape: [number, number, number]; // مقیاس جمجمه
-  jaw: boolean;                        // آرواره بزرگ ارگی
-  browRidge: boolean;
-  elfEars: boolean;
+  bodies: BodyId[];
+  defaultBody: BodyId;
+  defaultHeight: number;
+  defaultBulk: number;
+  ears: boolean;
   tusks: boolean;
-  defaults: Omit<CharConfig, 'name' | 'race' | 'height' | 'bulk'>;
+  defaults: Omit<CharConfig, 'name' | 'race' | 'body' | 'height' | 'bulk' | 'ears' | 'tusks'>;
   names: string[];
 }
 
 const HUMAN_DEFAULTS = {
-  skin: '#e0ac7e', hair: 'short' as HairId, hairColor: '#3d2b1f',
-  beard: 'stubble' as BeardId, beardColor: '#3d2b1f', eyes: '#5b3a1e',
-  weapon: 'swordShield' as WeaponId,
-  outfit: '#7a2e2e', pants: '#3a2f24', boots: '#2e2318', metal: '#b08d57',
+  skin: '#eab586', hair: 'baked' as HairStyleId, hairColor: '#4a3220',
+  beard: 'baked' as BeardStyleId, beardColor: '#4a3220',
+  cloth: '#8a3c3c', metal: '#c8c8cf', bone: '#9a96b8',
+  weapon: 'sword', helmet: false, cape: false,
 };
 
 const ELF_DEFAULTS = {
-  skin: '#f2d5b0', hair: 'long' as HairId, hairColor: '#d9c27a',
-  beard: 'none' as BeardId, beardColor: '#d9c27a', eyes: '#3a6478',
-  weapon: 'bow' as WeaponId,
-  outfit: '#3d4a33', pants: '#33383d', boots: '#241d16', metal: '#d4af37',
+  skin: '#f4dcc0', hair: 'baked' as HairStyleId, hairColor: '#e8d9a0',
+  beard: 'none' as BeardStyleId, beardColor: '#e8d9a0',
+  cloth: '#3d5a44', metal: '#d4af37', bone: '#9a96b8',
+  weapon: 'none', helmet: false, cape: false,
 };
 
 const ORC_DEFAULTS = {
-  skin: '#6b8a4a', hair: 'mohawk' as HairId, hairColor: '#1b1b1b',
-  beard: 'full' as BeardId, beardColor: '#241f16', eyes: '#c9a227',
-  weapon: 'axe' as WeaponId,
-  outfit: '#4a3b2a', pants: '#2e2a22', boots: '#241d16', metal: '#8a8f98',
+  skin: '#6f8f4f', hair: 'mohawk' as HairStyleId, hairColor: '#1c1c1c',
+  beard: 'none' as BeardStyleId, beardColor: '#241f16',
+  cloth: '#5b4a35', metal: '#8a8f98', bone: '#e6dcc3',
+  weapon: 'axe', helmet: false, cape: false,
 };
 
 const DWARF_DEFAULTS = {
-  skin: '#dba173', hair: 'short' as HairId, hairColor: '#a93226',
-  beard: 'long' as BeardId, beardColor: '#a93226', eyes: '#2e5339',
-  weapon: 'mace' as WeaponId,
-  outfit: '#6b5a2e', pants: '#4a3826', boots: '#3d2b1f', metal: '#c8c8cf',
+  skin: '#e0a878', hair: 'short' as HairStyleId, hairColor: '#a9442e',
+  beard: 'full' as BeardStyleId, beardColor: '#a9442e',
+  cloth: '#6b5a2e', metal: '#c8c8cf', bone: '#9a96b8',
+  weapon: 'sword', helmet: false, cape: false,
+};
+
+const UNDEAD_DEFAULTS = {
+  skin: '#8d89ad', hair: 'none' as HairStyleId, hairColor: '#1c1c1c',
+  beard: 'none' as BeardStyleId, beardColor: '#1c1c1c',
+  cloth: '#c9b896', metal: '#6e6e78', bone: '#8d89ad',
+  weapon: 'none', helmet: true, cape: false,
 };
 
 export const RACES: Record<RaceId, RacePreset> = {
   human: {
-    id: 'human',
-    label: 'انسان',
-    desc: 'متعادل و سازگار — جنگجوی سرزمین میانه',
-    width: 1.0,
-    boneScales: {},
-    headShape: [0.92, 1.08, 0.98],
-    jaw: false, browRidge: false, elfEars: false, tusks: false,
+    id: 'human', label: 'انسان', desc: 'متعادل و سازگار — از راهزن تا پالادین',
+    bodies: ['Rogue', 'Knight', 'Barbarian', 'Mage'], defaultBody: 'Knight',
+    defaultHeight: 1, defaultBulk: 1, ears: false, tusks: false,
     defaults: HUMAN_DEFAULTS,
     names: ['آریوبرزن', 'رستم', 'سهراب', 'گیو', 'بهرام', 'ژوبین', 'اردشیر', 'طوس'],
   },
   elf: {
-    id: 'elf',
-    label: 'الف',
-    desc: 'بلندقامت و چابک — کماندار جنگل‌های جاودانه',
-    width: 0.88,
-    boneScales: {
-      upperLegL: 1.07, lowerLegL: 1.07, upperLegR: 1.07, lowerLegR: 1.07,
-      spine: 1.05, chest: 1.05,
-      upperArmL: 1.06, lowerArmL: 1.06, upperArmR: 1.06, lowerArmR: 1.06,
-      head: 0.99, neck: 1.02,
-    },
-    headShape: [0.88, 1.10, 0.96],
-    jaw: false, browRidge: false, elfEars: true, tusks: false,
+    id: 'elf', label: 'الف', desc: 'بلندقامت جنگل‌های جاودانه — با گوش‌های تیز',
+    bodies: ['Rogue_Hooded', 'Mage'], defaultBody: 'Rogue_Hooded',
+    defaultHeight: 1.06, defaultBulk: 0.92, ears: true, tusks: false,
     defaults: ELF_DEFAULTS,
     names: ['ائارین', 'سلون‌تیر', 'لثارئل', 'آرِن‌دیل', 'سیلوَن', 'تارمین', 'ائوگلین'],
   },
   orc: {
-    id: 'orc',
-    label: 'ارگ',
-    desc: 'تنومند و خشمگین — بربر جنگل‌های سیاه',
-    width: 1.28,
-    boneScales: {
-      upperLegL: 0.97, lowerLegL: 0.97, upperLegR: 0.97, lowerLegR: 0.97,
-      spine: 1.06, chest: 1.06,
-      upperArmL: 1.05, lowerArmL: 1.05, upperArmR: 1.05, lowerArmR: 1.05,
-      head: 1.03, neck: 1.06,
-    },
-    headShape: [0.98, 1.04, 1.08],
-    jaw: true, browRidge: true, elfEars: false, tusks: true,
+    id: 'orc', label: 'ارگ', desc: 'تنومند جنگل‌های سیاه — با عاج‌های خشم',
+    bodies: ['Barbarian'], defaultBody: 'Barbarian',
+    defaultHeight: 1.08, defaultBulk: 1.22, ears: false, tusks: true,
     defaults: ORC_DEFAULTS,
     names: ['گروش‌نک', 'موگور', 'زاروگ', 'کراش', 'اِرومال', 'دورگ', 'بلاک‌دست'],
   },
   dwarf: {
-    id: 'dwarf',
-    label: 'دورف',
-    desc: 'کوتاه‌قد و ستبر — پالادار کوه‌های عمیق',
-    width: 1.26,
-    boneScales: {
-      upperLegL: 0.84, lowerLegL: 0.80, upperLegR: 0.84, lowerLegR: 0.80,
-      spine: 0.95, chest: 0.91,
-      upperArmL: 0.92, lowerArmL: 0.92, upperArmR: 0.92, lowerArmR: 0.92,
-      head: 1.10, neck: 0.96,
-    },
-    headShape: [1.0, 1.0, 1.02],
-    jaw: false, browRidge: true, elfEars: false, tusks: false,
+    id: 'dwarf', label: 'دورف', desc: 'کوتاه‌قد کوه‌های عمیق — ریش‌های افتخار',
+    bodies: ['Knight', 'Barbarian'], defaultBody: 'Knight',
+    defaultHeight: 0.76, defaultBulk: 1.18, ears: false, tusks: false,
     defaults: DWARF_DEFAULTS,
     names: ['تورین', 'بالین', 'دورین', 'گیملی', 'بروک', 'موگ‌تبر', 'حیدرکوه'],
+  },
+  undead: {
+    id: 'undead', label: 'مرده‌متحرک', desc: 'برخاسته از گور — استخوان و شنل کهنه',
+    bodies: ['Skeleton_Warrior', 'Skeleton_Minion'], defaultBody: 'Skeleton_Warrior',
+    defaultHeight: 1, defaultBulk: 1, ears: false, tusks: false,
+    defaults: UNDEAD_DEFAULTS,
+    names: ['استخوان‌ترک', 'مرگ‌خیز', 'گوربان', 'خاک‌زده', 'شب‌گرد', 'زمین‌پیچ'],
   },
 };
 
 // ── پالت‌های رنگ ──────────────────────────────────────────────
 export const SKIN_PALETTES: Record<RaceId, string[]> = {
-  human: ['#f5d0a9', '#e0ac7e', '#c68a5c', '#a96e4b', '#7d5235', '#5a3a26'],
-  elf: ['#f9e4c8', '#f2d5b0', '#e3bd97', '#cf9f75', '#b58257', '#8f6240'],
-  orc: ['#96a86e', '#7d9b57', '#6b8a4a', '#5c7a3f', '#4f6b36', '#7a6b4a'],
-  dwarf: ['#f0c49a', '#dba173', '#c08a5f', '#a96e4b', '#7d5235', '#5f4028'],
+  human: ['#f7dcc4', '#eab586', '#d49a6a', '#b07a50', '#8a5c3c', '#63422c'],
+  elf: ['#fbeedd', '#f4dcc0', '#e6c5a0', '#cf9f75', '#a97e56', '#7d5a3c'],
+  orc: ['#a4b878', '#8aa460', '#6f8f4f', '#5c7a42', '#4c6638', '#7a8a5a'],
+  dwarf: ['#f4cfa8', '#e0a878', '#c88a5c', '#a96e48', '#82543a', '#5f4028'],
+  undead: ['#b8b4d0', '#8d89ad', '#7a7699', '#67638a', '#56527a', '#46436a'],
 };
 
-export const HAIR_COLORS = ['#121212', '#2b2118', '#3d2b1f', '#5d4037', '#8d6e63', '#b8860b', '#d9c27a', '#a93226', '#e8e6e3', '#4b5563'];
-export const EYE_COLORS = ['#5b3a1e', '#2e5339', '#3a6478', '#7a6a34', '#9aa0a6', '#4a2c17', '#c9a227', '#6e3b3b'];
-export const OUTFIT_COLORS = ['#7a2e2e', '#3d4a33', '#6b5a2e', '#54372a', '#2e3438', '#5a4a6b', '#8a5a2a', '#37474f'];
-export const PANTS_COLORS = ['#3a2f24', '#2e2e2e', '#4a3826', '#5c4a33', '#33383d', '#44322c'];
-export const BOOTS_COLORS = ['#2e2318', '#3d2b1f', '#241d16', '#4a3524', '#1f2426', '#33261a'];
-export const METAL_COLORS = ['#c8c8cf', '#b08d57', '#8a8f98', '#d4af37', '#6e6e78', '#9a7b4f', '#e2e2e6'];
+export const HAIR_COLORS = ['#121212', '#2b2118', '#4a3220', '#6b4a2e', '#8d6e63', '#c8a24a', '#e8d9a0', '#a9442e', '#e8e6e3', '#4b5563'];
+export const CLOTH_COLORS = ['#8a3c3c', '#3d5a44', '#6b5a2e', '#54372a', '#2e3438', '#5a4a6b', '#8a5a2a', '#37474f', '#a4552e', '#2c4a6b'];
+export const METAL_COLORS = ['#c8c8cf', '#b08d57', '#8a8f98', '#d4af37', '#6e6e78', '#9a7b4f', '#e2e2e6', '#5c6b7a'];
 
-export const HAIR_STYLES: { id: HairId; label: string }[] = [
+export const HAIR_STYLES: { id: HairStyleId; label: string }[] = [
+  { id: 'baked', label: 'پیش‌فرض' },
   { id: 'none', label: 'کچل' },
   { id: 'short', label: 'کوتاه' },
   { id: 'long', label: 'بلند' },
@@ -158,7 +139,8 @@ export const HAIR_STYLES: { id: HairId; label: string }[] = [
   { id: 'mohawk', label: 'موهاک' },
 ];
 
-export const BEARD_STYLES: { id: BeardId; label: string }[] = [
+export const BEARD_STYLES: { id: BeardStyleId; label: string }[] = [
+  { id: 'baked', label: 'پیش‌فرض' },
   { id: 'none', label: 'بدون ریش' },
   { id: 'stubble', label: 'ته‌ریش' },
   { id: 'full', label: 'پرپشت' },
@@ -170,8 +152,11 @@ export function defaultConfig(race: RaceId = 'human', name?: string): CharConfig
   return {
     name: name ?? r.names[Math.floor(Math.random() * r.names.length)],
     race,
-    height: 1,
-    bulk: 1,
+    body: r.defaultBody,
+    height: r.defaultHeight,
+    bulk: r.defaultBulk,
+    ears: r.ears,
+    tusks: r.tusks,
     ...JSON.parse(JSON.stringify(r.defaults)),
   };
 }
@@ -183,73 +168,73 @@ export function randomName(race: RaceId): string {
   return Math.random() < 0.45 ? `${base} ${TITLE_SUFFIX[Math.floor(Math.random() * TITLE_SUFFIX.length)]}` : base;
 }
 
-// ── پریست‌های قهرمان آماده ──────────────────────────────────
-export interface HeroPreset {
-  id: string;
-  label: string;
-  desc: string;
-  cfg: CharConfig;
+/** وقتی نژاد عوض می‌شود: رنگ‌ها/ویژگی‌های نژادی اعمال و نام نژادی جدید انتخاب می‌شود */
+export function rebaseConfigForRace(_cfg: CharConfig, race: RaceId): CharConfig {
+  return defaultConfig(race, randomName(race));
 }
+
+// ── پریست‌های قهرمان آماده ──────────────────────────────────
+export interface HeroPreset { id: string; label: string; desc: string; cfg: CharConfig }
 
 export const HERO_PRESETS: HeroPreset[] = [
   {
-    id: 'warrior',
-    label: 'آریوبرزن آذرخش',
-    desc: 'پالادین انسان — شمشیر و سپر',
+    id: 'warrior', label: 'آریوبرزن آذرخش', desc: 'پالادین انسان — شمشیر و سپر',
     cfg: {
-      name: 'آریوبرزن آذرخش', race: 'human', skin: '#e0ac7e',
-      hair: 'short', hairColor: '#3d2b1f', beard: 'stubble', beardColor: '#3d2b1f',
-      eyes: '#5b3a1e', weapon: 'swordShield',
-      outfit: '#7a2e2e', pants: '#3a2f24', boots: '#2e2318', metal: '#b08d57',
-      height: 1.03, bulk: 1.1,
+      name: 'آریوبرزن آذرخش', race: 'human', body: 'Knight',
+      skin: '#eab586', hair: 'baked', hairColor: '#4a3220',
+      beard: 'baked', beardColor: '#4a3220', ears: false, tusks: false,
+      cloth: '#a4413c', metal: '#c8c8cf', bone: '#9a96b8',
+      weapon: 'swordShield', helmet: false, cape: true, height: 1.02, bulk: 1.08,
     },
   },
   {
-    id: 'ranger',
-    label: 'ائارین سایه‌روان',
-    desc: 'کماندار الف — تیرانداز جنگل',
+    id: 'ranger', label: 'ائارین سایه‌روان', desc: 'کماندار الف — کلاه‌بردار جنگل',
     cfg: {
-      name: 'ائارین سایه‌روان', race: 'elf', skin: '#f2d5b0',
-      hair: 'ponytail', hairColor: '#d9c27a', beard: 'none', beardColor: '#d9c27a',
-      eyes: '#3a6478', weapon: 'bow',
-      outfit: '#3d4a33', pants: '#33383d', boots: '#241d16', metal: '#d4af37',
-      height: 1.06, bulk: 0.92,
+      name: 'ائارین سایه‌روان', race: 'elf', body: 'Rogue_Hooded',
+      skin: '#f4dcc0', hair: 'baked', hairColor: '#e8d9a0',
+      beard: 'none', beardColor: '#e8d9a0', ears: true, tusks: false,
+      cloth: '#2e6b48', metal: '#d4af37', bone: '#9a96b8',
+      weapon: 'crossbow', helmet: false, cape: true, height: 1.06, bulk: 0.92,
     },
   },
   {
-    id: 'berserker',
-    label: 'گروش‌نک قلدر',
-    desc: 'بربر ارک — تبر خونین',
+    id: 'berserker', label: 'گروش‌نک قلدر', desc: 'بربر ارگ — تبر خونین',
     cfg: {
-      name: 'گروش‌نک قلدر', race: 'orc', skin: '#6b8a4a',
-      hair: 'mohawk', hairColor: '#1b1b1b', beard: 'full', beardColor: '#241f16',
-      eyes: '#c9a227', weapon: 'axe',
-      outfit: '#4a3b2a', pants: '#2e2a22', boots: '#241d16', metal: '#8a8f98',
-      height: 1.05, bulk: 1.24,
+      name: 'گروش‌نک قلدر', race: 'orc', body: 'Barbarian',
+      skin: '#6f8f4f', hair: 'mohawk', hairColor: '#1c1c1c',
+      beard: 'none', beardColor: '#241f16', ears: false, tusks: true,
+      cloth: '#4a5a6b', metal: '#8a8f98', bone: '#e6dcc3',
+      weapon: 'axe2h', helmet: true, cape: false, height: 1.1, bulk: 1.25,
     },
   },
   {
-    id: 'king',
-    label: 'تورین تبرکوه',
-    desc: 'پادشاه دورف — گرز طلایی',
+    id: 'king', label: 'تورین تبرکوه', desc: 'شاه دورف — ریش پرپشت و زره',
     cfg: {
-      name: 'تورین تبرکوه', race: 'dwarf', skin: '#dba173',
-      hair: 'short', hairColor: '#a93226', beard: 'long', beardColor: '#a93226',
-      eyes: '#2e5339', weapon: 'mace',
-      outfit: '#6b5a2e', pants: '#4a3826', boots: '#3d2b1f', metal: '#d4af37',
-      height: 0.97, bulk: 1.22,
+      name: 'تورین تبرکوه', race: 'dwarf', body: 'Knight',
+      skin: '#e0a878', hair: 'short', hairColor: '#a9442e',
+      beard: 'long', beardColor: '#a9442e', ears: false, tusks: false,
+      cloth: '#6b5a2e', metal: '#d4af37', bone: '#9a96b8',
+      weapon: 'sword', helmet: false, cape: true, height: 0.76, bulk: 1.2,
     },
   },
   {
-    id: 'mage',
-    label: 'لثارئل افسون‌خوان',
-    desc: 'جادوی الف — عصای مه‌آلود',
+    id: 'mage', label: 'لثارئل افسون‌خوان', desc: 'جادوی الف — ردای بنفش',
     cfg: {
-      name: 'لثارئل افسون‌خوان', race: 'elf', skin: '#f9e4c8',
-      hair: 'long', hairColor: '#e8e6e3', beard: 'none', beardColor: '#e8e6e3',
-      eyes: '#3a6478', weapon: 'staff',
-      outfit: '#5a4a6b', pants: '#33383d', boots: '#241d16', metal: '#d4af37',
-      height: 1.04, bulk: 0.9,
+      name: 'لثارئل افسون‌خوان', race: 'elf', body: 'Mage',
+      skin: '#fbeedd', hair: 'long', hairColor: '#e8d9a0',
+      beard: 'none', beardColor: '#e8d9a0', ears: true, tusks: false,
+      cloth: '#5a4a6b', metal: '#d4af37', bone: '#9a96b8',
+      weapon: 'staff', helmet: true, cape: false, height: 1.04, bulk: 0.9,
+    },
+  },
+  {
+    id: 'grave', label: 'استخوان‌ترک گوربان', desc: 'مرده‌متحرک — تهدید گورستان',
+    cfg: {
+      name: 'استخوان‌ترک گوربان', race: 'undead', body: 'Skeleton_Warrior',
+      skin: '#8d89ad', hair: 'none', hairColor: '#1c1c1c',
+      beard: 'none', beardColor: '#1c1c1c', ears: false, tusks: false,
+      cloth: '#c9b896', metal: '#6e6e78', bone: '#8d89ad',
+      weapon: 'none', helmet: true, cape: false, height: 1, bulk: 1,
     },
   },
 ];
