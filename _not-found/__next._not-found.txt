@@ -1,0 +1,4 @@
+1:"$Sreact.fragment"
+2:I[49359,["/free-animation-maker/_next/static/chunks/fc3e3ae7a506c2ba.js"],"default"]
+3:I[34179,["/free-animation-maker/_next/static/chunks/fc3e3ae7a506c2ba.js"],"default"]
+0:{"buildId":"Mv-olg13ouwB30hBac0D6","rsc":["$","$1","c",{"children":[null,["$","$L2",null,{"parallelRouterKey":"children","template":["$","$L3",null,{}]}]]}],"loading":null,"isPartial":false}

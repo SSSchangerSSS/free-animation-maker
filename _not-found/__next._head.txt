@@ -1,0 +1,6 @@
+1:"$Sreact.fragment"
+2:I[69403,["/free-animation-maker/_next/static/chunks/fc3e3ae7a506c2ba.js"],"ViewportBoundary"]
+3:I[69403,["/free-animation-maker/_next/static/chunks/fc3e3ae7a506c2ba.js"],"MetadataBoundary"]
+4:"$Sreact.suspense"
+5:I[35966,["/free-animation-maker/_next/static/chunks/fc3e3ae7a506c2ba.js"],"IconMark"]
+0:{"buildId":"Mv-olg13ouwB30hBac0D6","rsc":["$","$1","h",{"children":[["$","meta",null,{"name":"robots","content":"noindex"}],["$","$L2",null,{"children":[["$","meta","0",{"charSet":"utf-8"}],["$","meta","1",{"name":"viewport","content":"width=device-width, initial-scale=1"}],["$","meta","2",{"name":"theme-color","content":"#0f0c08"}]]}],["$","div",null,{"hidden":true,"children":["$","$L3",null,{"children":["$","$4",null,{"name":"Next.Metadata","children":[["$","title","0",{"children":"شخصیت‌ساز قهرمانان | Character Forge"}],["$","meta","1",{"name":"description","content":"ساخت شخصیت فانتزی سه‌بعدی با نژادهای انسان، الف، ارگ و دورف — شخصی‌سازی کامل و کتابخانه انیمیشن با Three.js"}],["$","link","2",{"rel":"icon","href":"https://z-cdn.chatglm.cn/z-ai/static/logo.svg"}],["$","$L5","3",{}]]}]}]}],["$","meta",null,{"name":"next-size-adjust","content":""}]]}],"loading":null,"isPartial":false}

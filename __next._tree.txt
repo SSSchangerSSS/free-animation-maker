@@ -1,0 +1,6 @@
+:HL["/free-animation-maker/_next/static/chunks/5873fe5e6c942e27.css","style"]
+:HL["/free-animation-maker/_next/static/media/Vazirmatn_Black-s.p.23455a85.woff2","font",{"crossOrigin":"","type":"font/woff2"}]
+:HL["/free-animation-maker/_next/static/media/Vazirmatn_Bold-s.p.af83fa93.woff2","font",{"crossOrigin":"","type":"font/woff2"}]
+:HL["/free-animation-maker/_next/static/media/Vazirmatn_Medium-s.p.b4f84bf0.woff2","font",{"crossOrigin":"","type":"font/woff2"}]
+:HL["/free-animation-maker/_next/static/media/Vazirmatn_Regular-s.p.c2ca23de.woff2","font",{"crossOrigin":"","type":"font/woff2"}]
+0:{"buildId":"Mv-olg13ouwB30hBac0D6","tree":{"name":"","paramType":null,"paramKey":"","hasRuntimePrefetch":false,"slots":{"children":{"name":"__PAGE__","paramType":null,"paramKey":"__PAGE__","hasRuntimePrefetch":false,"slots":null,"isRootLayout":false}},"isRootLayout":true},"staleTime":300}
