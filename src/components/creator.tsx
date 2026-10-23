@@ -461,7 +461,10 @@ export default function Creator() {
       engine = new Engine(mountRef.current); // A28 — خطای WebGL با پیام قابل فهم
     } catch (e) {
       console.error('WebGL init failed', e);
-      setGlError('راه‌اندازی WebGL ناموفق بود — مرورگر یا درایور گرافیکی شما از WebGL پشتیبانی نمی‌کند.');
+      // خارج از بدنِ همگام اثر — قاعدهٔ react-hooks/set-state-in-effect
+      queueMicrotask(() => {
+        setGlError('راه‌اندازی WebGL ناموفق بود — مرورگر یا درایور گرافیکی شما از WebGL پشتیبانی نمی‌کند.');
+      });
       return;
     }
     engineRef.current = engine;

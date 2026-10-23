@@ -166,6 +166,8 @@ function prettify(name: string): string {
 // انیمیشن‌های بومی KayKit با سلاح ریس شده‌اند ⇒ دست؛ ریتارگت‌شده‌ها
 // و تعاملات اجتماعی ⇒ سلاح پشت کمر تا تیغه وارد بدن نشود.
 const KK_HAND_OFF = /^(Unarmed_|Sit_|Lie_|PickUp|Use_Item|Interact|Cheer)/;
+// اندازه‌گیری‌شده با tests/collision-kk.test.ts — تیغه تا ۱۳cm داخل تنه
+const KK_2H_BROKEN = /^2H_Melee_Attack/;
 /**
  * سیاست سلاح — بدنه‌های V3: سلاح در دست برای همه‌ی حالت‌های طبیعی
  * (ایست/راه‌رفتن/رزم/جادو) و پشت کمر برای حرکاتی که دست‌ها کاملاً
@@ -173,10 +175,12 @@ const KK_HAND_OFF = /^(Unarmed_|Sit_|Lie_|PickUp|Use_Item|Interact|Cheer)/;
  * در حالت دست فعال است.
  */
 const V3_HAND_OFF = /Dance|Sit_|Lie_|PickUp|Interact|Use_Item|Swim|Drive|Roll|Push_|Fixing|Death|Cheer|Wave|^bow$|^death$|^hit$|^dance$|^wave$|^cheer$/i;
-function weaponModeFor(animId: string, v3 = false): WeaponMode {
+export function weaponModeFor(animId: string, v3 = false): WeaponMode {
   const [src, name] = animId.includes(':') ? [animId.slice(0, animId.indexOf(':')), animId.slice(animId.indexOf(':') + 1)] : ['model', animId];
   if (v3) return V3_HAND_OFF.test(name) || V3_HAND_OFF.test(animId) ? 'back' : 'hand';
-  if (src === 'kk') return KK_HAND_OFF.test(name) ? 'back' : 'hand';
+  // 2H_Melee_Attack_* روی KayKit: اندازه‌گیری هارنس (۱۲۰Hz) — تیغه تا ۱۳cm
+  // در تنه؛ اصلاح مفصلی جواب نمی‌دهد ⇒ سیاستاً پشت تا بازنویسی proc per-weapon
+  if (src === 'kk') return (KK_HAND_OFF.test(name) || KK_2H_BROKEN.test(name)) ? 'back' : 'hand';
   if (src === 'ual') return /^Sword_/.test(name) ? 'hand' : 'back';
   if (src === 'proc') return /^(guard|attack|block)$/.test(name) ? 'hand' : 'back';
   return 'back';
@@ -426,12 +430,15 @@ export class Engine {
       const handBone = w.def.hand === 'l' ? this.character.handBones.l : this.character.handBones.r;
       if (handBone) {
         handBone.updateWorldMatrix(true, false);
-        // تیغه در فضای محلی دست: ماتریس گروه × نقطه‌ی خام × scale
+        // تیغه در فضای محلی دست: ماتریس گروه × نقطه‌ی خام
+        // ⚠️ نقطه‌ی خام دیگر در scale ضرب نمی‌شود — gm خودش scale دارد؛
+        // ضرب دوم تیغه را به ۲۷٪ واقعی کوچک می‌کرد و AntiClip فقط
+        // ابتدای تیغه را می‌دید (کشف با هارنس هندسی tests/collision-v3.test.ts)
         const gm = new THREE.Matrix4().compose(
           w.group.position, w.group.quaternion, new THREE.Vector3().setScalar(w.def.scale),
         );
-        const from = new THREE.Vector3(...w.def.bladeFrom).multiplyScalar(w.def.scale).applyMatrix4(gm);
-        const to = new THREE.Vector3(...w.def.bladeTo).multiplyScalar(w.def.scale).applyMatrix4(gm);
+        const from = new THREE.Vector3(...w.def.bladeFrom).applyMatrix4(gm);
+        const to = new THREE.Vector3(...w.def.bladeTo).applyMatrix4(gm);
         this.anticlip.update(handBone, w.group, from, to);
       }
     }
