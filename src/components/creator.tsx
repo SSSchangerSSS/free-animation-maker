@@ -25,8 +25,10 @@ import { BODIES } from '@/lib/character/kaykit';
 import {
   RACES, SKIN_PALETTES, HAIR_COLORS, CLOTH_COLORS, METAL_COLORS,
   HAIR_STYLES, BEARD_STYLES, HERO_PRESETS, defaultConfig, randomName, rebaseConfigForRace,
+  PHYSIQUE_SLIDERS,
   type CharConfig, type RaceId,
 } from '@/lib/character/types';
+import { DEFAULT_PHYSIQUE, RACE_PHYSIQUE } from '@/lib/character/reshape';
 
 // ── آیکون‌ها ─────────────────────────────────────────────────
 const RACE_ICONS: Record<RaceId, React.ComponentType<{ className?: string }>> = {
@@ -288,15 +290,38 @@ function CustomizationPanel({ cfg, set }: {
 
           {/* اندام */}
           <TabsContent value="body" className="mt-0">
-            <SectionTitle>اندام {race.label}</SectionTitle>
-            <div className="mb-4 flex items-center gap-2 rounded-lg border border-[#c8a24a]/15 bg-black/20 p-2.5 text-xs text-[#8a8070]">
-              <RaceIcon className="h-4 w-4 shrink-0 text-[#c8a24a]" />
-              قد پایه {race.label}: {Math.round(race.defaultHeight * 100)}٪ — با اسلایدر تنظیم کنید.
-            </div>
+            <SectionTitle>قد و تنومندی</SectionTitle>
             <SliderRow label="قد" value={cfg.height} min={0.62} max={1.12} step={0.01}
               onChange={(v) => set({ height: v })} format={(v) => `${Math.round(v * 178)} سانتی‌متر`} />
             <SliderRow label="تنومندی" value={cfg.bulk} min={0.85} max={1.25} step={0.01}
               onChange={(v) => set({ bulk: v })} format={(v) => `${Math.round(v * 100)}٪`} />
+
+            <div className="mt-4 flex items-center justify-between">
+              <SectionTitle>نسبت‌های اندام</SectionTitle>
+              <button
+                type="button"
+                onClick={() => set({ physique: { ...(RACE_PHYSIQUE[cfg.race] ?? DEFAULT_PHYSIQUE) } })}
+                className="mb-2 rounded border border-[#c8a24a]/30 px-2 py-0.5 text-[10px] text-[#c8a24a] hover:bg-[#c8a24a]/10"
+              >
+                بازنشانی نژاد
+              </button>
+            </div>
+            {PHYSIQUE_SLIDERS.map((s) => (
+              <SliderRow
+                key={s.key}
+                label={s.label}
+                value={cfg.physique?.[s.key] ?? 1}
+                min={s.min}
+                max={s.max}
+                step={0.01}
+                onChange={(v) => set({ physique: { ...(cfg.physique ?? DEFAULT_PHYSIQUE), [s.key]: v } })}
+                format={(v) => `${Math.round(v * 100)}٪`}
+              />
+            ))}
+            <p className="mt-2 text-[10px] leading-4 text-[#6b6252]">
+              نسبت‌ها روی اسکلت اعمال می‌شوند — مثل اسلایدرهای بدن بازی‌های AAA؛
+              هر نژاد پیش‌فرض قهرمانی خودش را دارد.
+            </p>
           </TabsContent>
 
           {/* جامه */}
@@ -401,7 +426,11 @@ export default function Creator() {
      
   }, []);
 
-  useEffect(() => { void engineRef.current?.setCharacter(config); }, [config]);
+  useEffect(() => {
+    // debounce — اسلایدرها را روان می‌کند و بازسازی‌های پشت‌سرهم را حذف می‌کند
+    const h = setTimeout(() => { void engineRef.current?.setCharacter(config); }, 120);
+    return () => clearTimeout(h);
+  }, [config]);
   useEffect(() => { engineRef.current?.play(activeAnim); }, [activeAnim]);
   useEffect(() => { engineRef.current?.setSpeed(speed); }, [speed]);
   useEffect(() => { engineRef.current?.setAutoRotate(autoRotate); }, [autoRotate]);
@@ -525,7 +554,7 @@ export default function Creator() {
   }, [anims, libQuery, libCat]);
 
   const favAnims = useMemo(() => {
-    const favs = ['kk:Idle', 'kk:Walking_A', 'kk:Running_A', 'kk:1H_Melee_Attack_Slice_Horizontal', 'kk:Block', 'kk:Spellcast_Shoot', 'kk:Jump_Full_Short', 'ual:Dance_Loop', 'kk:Cheer', 'kk:Death_A', 'kk:Unarmed_Melee_Attack_Punch_A', 'kk:Throw'];
+    const favs = ['kk:Idle', 'kk:Walking_A', 'kk:Running_A', 'kk:1H_Melee_Attack_Slice_Horizontal', 'kk:Block', 'kk:Spellcast_Shoot', 'kk:Jump_Full_Short', 'proc:dance', 'proc:cheer', 'kk:Death_A', 'kk:Unarmed_Melee_Attack_Punch_A', 'kk:Throw'];
     return favs.map((id) => anims.find((a) => a.id === id)).filter((a): a is EngineAnimInfo => Boolean(a));
   }, [anims]);
 
@@ -541,7 +570,7 @@ export default function Creator() {
           <Swords className="h-5 w-5 text-[#c8a24a]" />
           <h1 className="text-base font-black tracking-wide md:text-lg">شخصیت‌ساز قهرمانان</h1>
           <span className="hidden rounded-full border border-[#c8a24a]/30 bg-[#c8a24a]/10 px-2 py-0.5 text-[10px] text-[#c8a24a] md:inline">
-            نسخه ۲ — بدنه‌های KayKit
+            نسخه ۳ — اندام قهرمانی
           </span>
           {anims.length > 0 && (
             <span className="hidden rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] text-emerald-400 lg:inline">

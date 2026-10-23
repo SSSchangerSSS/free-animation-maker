@@ -7,7 +7,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { buildKaykitCharacter, type CharacterBuild } from '../character';
+import { buildKaykitCharacter, type CharacterBuild, type WeaponMode, type GripTweak } from '../character';
 import type { CharConfig } from '../character/types';
 import { buildClipLibrary, ANIM_DEFS } from '../animation/clips';
 import {
@@ -160,8 +160,34 @@ const UAL: Record<string, [string, AnimCat, boolean]> = {
   Walk_Loop: ['راه رفتن', 'loco', true],
 };
 
+// UAL Dance جایگزینِ رقص رویه‌ای جدید است — برچسب متمایز
+UAL.Dance_Loop = ['رقص جهانی', 'social', true];
+
 function prettify(name: string): string {
   return name.replace(/_/g, ' ').replace(/(\d+)$/, ' $1').trim();
+}
+
+// ── سیاست سلاح: کدام انیمیشن‌ها سلاح در دست می‌خواهند ────────
+// انیمیشن‌های بومی KayKit با سلاح ریس شده‌اند ⇒ دست؛ ریتارگت‌شده‌ها
+// و تعاملات اجتماعی ⇒ سلاح پشت کمر تا تیغه وارد بدن نشود.
+const KK_HAND_OFF = /^(Unarmed_|Sit_|Lie_|PickUp|Use_Item|Interact|Cheer)/;
+function weaponModeFor(animId: string): WeaponMode {
+  const [src, name] = animId.includes(':') ? [animId.slice(0, animId.indexOf(':')), animId.slice(animId.indexOf(':') + 1)] : ['model', animId];
+  if (src === 'kk') return KK_HAND_OFF.test(name) ? 'back' : 'hand';
+  if (src === 'ual') return /^Sword_/.test(name) ? 'hand' : 'back';
+  if (src === 'proc') return /^(guard|attack|block)$/.test(name) ? 'hand' : 'back';
+  return 'back';
+}
+
+// توییک چنگ سلاح برای انیمیشن‌های شمشیر ریتارگت‌شده از UAL
+// (چنگ مبدأ با handslot تی‌کی‌یت نمی‌خواند — تیغه را می‌چرخانیم تا
+// رو به بالا/بیرون بایستد و داخل پاها فرو نرود)
+const GRIP_TWEAKS: [RegExp, GripTweak][] = [
+  [/^ual:Sword_/, { rz: 2.9, ry: -0.2, py: 0.006 }],
+];
+function gripTweakFor(animId: string): GripTweak | null {
+  for (const [re, tw] of GRIP_TWEAKS) if (re.test(animId)) return tw;
+  return null;
 }
 
 function classifyKaykit(name: string): [string, AnimCat, boolean] {
@@ -363,6 +389,7 @@ export class Engine {
     }
     this.mixer?.update(dt);
     this.imported?.mixer.update(dt);
+    this.character?.update(dt);
     this.controls.update();
     this.renderer.render(this.scene, this.camera);
   }
@@ -461,7 +488,9 @@ export class Engine {
   async setCharacter(cfg: CharConfig) {
     const seq = ++this.buildSeq;
     this.lastConfig = cfg;
-    const structural = `${cfg.race}|${cfg.body}|${cfg.hair}|${cfg.beard}|${cfg.ears}|${cfg.tusks}|${cfg.weapon}|${cfg.helmet}|${cfg.cape}|${cfg.height.toFixed(3)}|${cfg.bulk.toFixed(3)}`;
+    const ph = cfg.physique;
+    const structural = `${cfg.race}|${cfg.body}|${cfg.hair}|${cfg.beard}|${cfg.ears}|${cfg.tusks}|${cfg.weapon}|${cfg.helmet}|${cfg.cape}|${cfg.height.toFixed(3)}|${cfg.bulk.toFixed(3)}`
+      + `|${ph ? [ph.leg, ph.arm, ph.torso, ph.shoulder, ph.head, ph.muscle].map((v) => v.toFixed(3)).join(',') : '-'}`;
     const colors = `${cfg.skin}|${cfg.hairColor}|${cfg.beardColor}|${cfg.cloth}|${cfg.metal}|${cfg.bone}`;
 
     if (structural === this.lastStructural && this.character) {
@@ -487,6 +516,10 @@ export class Engine {
       }
       this.character = build;
       this.scene.add(build.root);
+      // دسترسی دیباگ در کنسول (تنظیم زنده‌ی اجزا)
+      if (typeof window !== 'undefined') {
+        (window as unknown as { __forge?: unknown }).__forge = { engine: this, build };
+      }
 
       this.mixer?.stopAllAction();
       this.mixer = new THREE.AnimationMixer(build.root);
@@ -545,6 +578,11 @@ export class Engine {
       if (prev && prev !== next) prev.stop();
     }
     this.currentAnim = id;
+    // ── وضعیت سلاح برای این انیمیشن (فقط وقتی سلاح فعال داریم) ──
+    if (this.character && this.lastConfig && this.lastConfig.weapon !== 'none') {
+      this.character.setWeaponMode(weaponModeFor(id));
+      this.character.setGripTweak(gripTweakFor(id));
+    }
   }
 
   get currentAnimId() { return this.currentAnim; }

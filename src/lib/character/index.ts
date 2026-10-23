@@ -1,26 +1,36 @@
 // ─────────────────────────────────────────────────────────────
-// کارخانه‌ی شخصیت V2 — اسمبل بدنه‌ی KayKit + بازرنگی + اجزا
+// کارخانه‌ی شخصیت V3 — اسمبل بدنه‌ی KayKit + Reshape بدن +
+// بازرنگی + اجزا + سیستم سلاح دووضعیتی (دست / پشتِ کمر)
 // ─────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import { clone as skeletonClone } from 'three/addons/utils/SkeletonUtils.js';
 import { BODIES, loadBody, type BodyDef, type BodyId } from './kaykit';
 import {
   buildPartMasks, createRecolorTarget, applyRecolors,
-  type RecolorTarget, type RecolorColors, type RecolorKey,
+  type RecolorTarget, type RecolorColors, type RecolorKey, type MaskSet,
 } from './recolor';
 import {
   buildHair, buildBeard, buildElfEars, buildTusks,
-  measureHeadFrame, type HeadFrame, type FeatureMats, type HairStyleId, type BeardStyleId,
+  measureHeadFrameSkinned, type HeadFrame, type FeatureMats, type HairStyleId, type BeardStyleId,
 } from './featuresKaykit';
+import { applyReshape, DEFAULT_PHYSIQUE, type Physique } from './reshape';
 import { RACES, type CharConfig } from './types';
 
-export type { BodyDef, BodyId, RecolorTarget, FeatureMats, HairStyleId, BeardStyleId };
+export type { BodyDef, BodyId, RecolorTarget, FeatureMats, HairStyleId, BeardStyleId, Physique };
 
 // ارتفاع هدف هر بدنه (متر) — قبل از ضریب قد کاربر
 const TARGET_HEIGHT: Record<string, number> = {
   Rogue: 1.78, Knight: 1.78, Barbarian: 1.8, Mage: 1.76, Rogue_Hooded: 1.78,
   Skeleton_Warrior: 1.68, Skeleton_Minion: 1.15,
 };
+
+export type WeaponMode = 'hand' | 'back';
+
+/** توییک چنگ‌زدن سلاح برای انیمیشن‌های خاص (ریتارگت‌شده) */
+export interface GripTweak {
+  rx?: number; ry?: number; rz?: number;
+  px?: number; py?: number; pz?: number;
+}
 
 export interface CharacterBuild {
   root: THREE.Group;
@@ -29,12 +39,28 @@ export interface CharacterBuild {
   recolor: RecolorTarget;
   featureMats: FeatureMats;
   headFrame: HeadFrame;
+  physique: Physique;
+  /** دست/پشت کردن سلاح فعال */
+  setWeaponMode: (mode: WeaponMode) => void;
+  getWeaponMode: () => WeaponMode;
+  /** توییک نرم چنگ سلاح (lerp در update) */
+  setGripTweak: (t: GripTweak | null) => void;
+  /** هر فریم — لرپ به سمت توییک هدف */
+  update: (dt: number) => void;
   /** بازرنگی سریع بدون بازسازی (رنگ پوست/مو/جامه/فلز/استخوان) */
   applyColors: (cfg: CharConfig) => void;
   dispose: () => void;
 }
 
 const ALL_KEYS: RecolorKey[] = ['skin', 'hair', 'cloth', 'metal', 'bone'];
+
+function findBone(root: THREE.Object3D, name: string): THREE.Bone | null {
+  let found: THREE.Bone | null = null;
+  root.traverse((o) => {
+    if (!found && (o as THREE.Bone).isBone && o.name === name) found = o as THREE.Bone;
+  });
+  return found;
+}
 
 function colorsFromCfg(cfg: CharConfig): RecolorColors {
   return {
@@ -43,13 +69,21 @@ function colorsFromCfg(cfg: CharConfig): RecolorColors {
   };
 }
 
+// ── کش ماسک UV هر بدنه (بازسازی‌ها را ارزان می‌کند) ──────────
+const maskCache = new Map<BodyId, MaskSet>();
+
 export async function buildKaykitCharacter(cfg: CharConfig): Promise<CharacterBuild> {
   const loaded = await loadBody(cfg.body);
   const def = loaded.def;
+  const phys: Physique = cfg.physique ?? DEFAULT_PHYSIQUE;
   const root = skeletonClone(loaded.pristine) as THREE.Group;
   root.name = 'characterRoot';
 
-  // ── نرمال‌سازی مقیاس و قرارگیری روی زمین ──
+  // ── ۱) Reshape اسکلتی (ضدچیبی + اسلایدرهای اندام) ──
+  // فقط scale استخوان‌ها — پایدار زیر انیمیشن؛ فرود خودکار با bbox
+  applyReshape(root, phys);
+
+  // ── ۲) نرمال‌سازی مقیاس و قرارگیری روی زمین ──
   root.updateMatrixWorld(true);
   const box = new THREE.Box3().setFromObject(root);
   const rawH = Math.max(0.01, box.max.y - box.min.y);
@@ -64,7 +98,7 @@ export async function buildKaykitCharacter(cfg: CharConfig): Promise<CharacterBu
   root.position.x -= cx;
   root.position.z -= cz;
 
-  // ── متریال و تکسچر اختصاصی (برای بازرنگی بدون نشت به کش) ──
+  // ── ۳) متریال و تکسچر اختصاصی (برای بازرنگی بدون نشت به کش) ──
   const meshes: THREE.Mesh[] = [];
   root.traverse((o) => { if ((o as THREE.Mesh).isMesh) meshes.push(o as THREE.Mesh); });
   let texture: THREE.Texture | null = null;
@@ -94,13 +128,17 @@ export async function buildKaykitCharacter(cfg: CharConfig): Promise<CharacterBu
     m.receiveShadow = false;
   }
 
-  // ── ماسک‌ها + بازرنگی ──
+  // ── ۴) ماسک‌ها (کش‌شده per body) + بازرنگی ──
   const texImg = texture!.image as HTMLImageElement;
-  const masks = buildPartMasks(root, texImg.width, texImg.height);
+  let masks = maskCache.get(def.id);
+  if (!masks || masks.texWidth !== texImg.width || masks.texHeight !== texImg.height) {
+    masks = buildPartMasks(root, texImg.width, texImg.height);
+    maskCache.set(def.id, masks);
+  }
   const recolor = createRecolorTarget(texture!, masks);
   recolor.rules = def.rules as RecolorTarget['rules'];
 
-  // ── سلاح‌ها و اکسسوری‌ها ──
+  // ── ۵) سلاح‌ها و اکسسوری‌ها ──
   const byName = new Map<string, THREE.Object3D[]>();
   root.traverse((o) => {
     const list = byName.get(o.name) ?? [];
@@ -129,12 +167,73 @@ export async function buildKaykitCharacter(cfg: CharConfig): Promise<CharacterBu
   if (def.helmet) def.helmet.nodes.forEach((n) => setVis(n, cfg.helmet));
   if (def.cape) def.cape.nodes.forEach((n) => setVis(n, cfg.cape));
 
+  // ── ۶) سیستم دووضعیتی سلاح: نسخه‌ی «پشت کمر» روی استخوان chest ──
+  const chestBone = (byName.get('chest')?.find((o) => (o as THREE.Bone).isBone)
+    ?? byName.get('chest')?.[0] ?? null) as THREE.Bone | null;
+  interface WeaponPair { hand: THREE.Object3D; back: THREE.Object3D | null; baseP: THREE.Vector3; baseQ: THREE.Quaternion }
+  const pairs: WeaponPair[] = [];
+  for (const nodeName of activeWeapon?.nodes ?? []) {
+    for (const handNode of byName.get(nodeName) ?? []) {
+      const baseP = handNode.position.clone();
+      const baseQ = handNode.quaternion.clone();
+      let back: THREE.Object3D | null = null;
+      if (chestBone) {
+        back = handNode.clone();
+        back.name = `${nodeName}__back`;
+        back.visible = false;
+        // نصب مورب روی کمر — دستگیره کنار کتف راست، تیغه رو به پایین-چپ
+        const idx = pairs.length;
+        back.position.set(0.015 - idx * 0.012, -0.005 - idx * 0.025, -0.085);
+        back.rotation.set(0.18, 0.08, -2.5 + idx * 0.14);
+        chestBone.add(back);
+        back.traverse((o) => { const mm = o as THREE.Mesh; if (mm.isMesh) { mm.castShadow = false; mm.visible = false; } });
+      }
+      pairs.push({ hand: handNode, back, baseP, baseQ });
+    }
+  }
+  let weaponMode: WeaponMode = 'hand';
+  const applyMode = () => {
+    for (const p of pairs) {
+      p.hand.visible = weaponMode === 'hand';
+      p.hand.traverse((o) => { const mm = o as THREE.Mesh; if (mm.isMesh) mm.castShadow = weaponMode === 'hand'; });
+      if (p.back) {
+        p.back.visible = weaponMode === 'back';
+        p.back.traverse((o) => { const mm = o as THREE.Mesh; if (mm.isMesh) mm.castShadow = weaponMode === 'back'; });
+      }
+    }
+  };
 
-  // ── قاب سر + اجزای چهره ──
-  const headBone = (byName.get('head')?.[0] ?? null) as THREE.Bone | null;
-  const headMeshes = meshes.filter((m) => /head/i.test(m.name) && !/helmet|hat/i.test(m.name));
+  // توییک چنگ — هدف lerp می‌شود تا پرش نکند
+  let gripTweak: GripTweak | null = null;
+  const tmpQ = new THREE.Quaternion();
+  const tmpE = new THREE.Euler();
+  const update = (dt: number) => {
+    const k = Math.min(1, dt * 10);
+    for (const p of pairs) {
+      if (weaponMode !== 'hand') continue;
+      if (gripTweak) {
+        tmpE.set(gripTweak.rx ?? 0, gripTweak.ry ?? 0, gripTweak.rz ?? 0, 'XYZ');
+        tmpQ.setFromEuler(tmpE).multiply(p.baseQ);
+        p.hand.quaternion.slerp(tmpQ, k);
+        p.hand.position.lerp(new THREE.Vector3(
+          p.baseP.x + (gripTweak.px ?? 0),
+          p.baseP.y + (gripTweak.py ?? 0),
+          p.baseP.z + (gripTweak.pz ?? 0),
+        ), k);
+      } else {
+        p.hand.quaternion.slerp(p.baseQ, k);
+        p.hand.position.lerp(p.baseP, k);
+      }
+    }
+  };
+
+  // ── ۷) قاب سر + اجزای چهره ──
+  // ⚠️ قاب از رئوس تغییرشکل‌یافته (skinning واقعی) اندازه‌گیری می‌شود تا
+  // با سرِ رندرشده در همان کلون reshape شده دقیقاً یکی باشد.
+  const headBone = findBone(root, 'head');
+  const headMeshes: THREE.Mesh[] = meshes.filter((m) => /head/i.test(m.name) && !/helmet|hat/i.test(m.name));
   const headFrame: HeadFrame = headBone
-    ? measureHeadFrame(headBone, headMeshes)
+    ? measureHeadFrameSkinned(headMeshes, headBone)
     : {
         bone: null as unknown as THREE.Bone,
         size: new THREE.Vector3(0.42, 0.4, 0.4),
@@ -168,7 +267,7 @@ export async function buildKaykitCharacter(cfg: CharConfig): Promise<CharacterBu
   };
   refreshFeatures();
 
-  // ── اعمال رنگ ──
+  // ── ۸) اعمال رنگ ──
   const applyColors = (next: CharConfig) => {
     applyRecolors(recolor, colorsFromCfg(next), {
       eraseHair: next.hair !== 'baked' && def.hairErasable,
@@ -190,7 +289,15 @@ export async function buildKaykitCharacter(cfg: CharConfig): Promise<CharacterBu
     Object.values(featureMats).forEach((m) => m.dispose());
   };
 
-  return { root, def, animations: loaded.animations, recolor, featureMats, headFrame, applyColors, dispose };
+  return {
+    root, def, animations: loaded.animations, recolor, featureMats, headFrame, physique: phys,
+    setWeaponMode: (mode) => { weaponMode = mode; applyMode(); },
+    getWeaponMode: () => weaponMode,
+    setGripTweak: (t) => { gripTweak = t; },
+    update,
+    applyColors,
+    dispose,
+  };
 }
 
 export { BODIES, RACES };

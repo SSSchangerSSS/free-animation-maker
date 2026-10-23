@@ -323,31 +323,87 @@ export interface SourceRest {
   hipsNode: string;
   /** ارتفاع جهانی لگن مبدأ در rest */
   hipsWorldY: number;
+  /**
+   * ⚠️ چرخش «مفقود» بین والد canonical و خود استخوان در مبدأ.
+   * در ریگ‌های واقعی بین والد نگاشت‌شده و استخوان، استخوان‌های نگاشت‌نشده
+   * (مثل shoulder یا root با چرخش ‎−90°X‎) وجود دارند؛ بدون این جبران،
+   * کل بدن ۹۰ درجه کج ریتارگت می‌شود (کرمپل!).
+   * world(realParentNode) × world(canonParentNode)⁻¹
+   */
+  extraQuat: Record<string, THREE.Quaternion>;
+  /** چرخش جهانی والدِ واقعی هر استخوان — برای fallback و دلتای موقعیت لگن */
+  realParentQuat: Record<string, THREE.Quaternion>;
+  /** ترجمه‌ی محلی استراحت لگن در فضای والد واقعی‌اش */
+  hipsRestLocal: THREE.Vector3;
 }
 
 export function normName(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]/g, '').replace(/^(def|org|mch|ctl)/, '');
 }
 
+const _decompV = new THREE.Vector3();
+const _decompS = new THREE.Vector3();
+
 export function measureSourceRest(root: THREE.Object3D, hipsNode: string): SourceRest {
   root.updateMatrixWorld(true);
-  const worldQuat: Record<string, THREE.Quaternion> = {};
-  const canonToNode: Record<string, string> = {};
+  /** همه‌ی کاندیدهای هر canonical — برای حل تعارض مثل detectHumanoidBones */
+  const candidates: Record<string, { norm: string; quat: THREE.Quaternion; node: THREE.Object3D }[]> = {};
+  const nodeWorldQuat = new Map<string, THREE.Quaternion>();
+  const nodeByNorm = new Map<string, THREE.Object3D>();
   let hipsWorldY = 1;
+  let hipsRestLocal = new THREE.Vector3(0, 1, 0);
   root.traverse((o) => {
     if (!(o as THREE.Bone).isBone) return;
     const norm = normName(o.name);
+    const q = new THREE.Quaternion();
+    o.matrixWorld.decompose(_decompV, q, _decompS);
+    if (!nodeWorldQuat.has(norm)) {
+      nodeWorldQuat.set(norm, q);
+      nodeByNorm.set(norm, o);
+    }
     const canon = matchCanonical(norm);
-    if (!canon || worldQuat[canon]) return;
-    worldQuat[canon] = new THREE.Quaternion();
-    o.matrixWorld.decompose(new THREE.Vector3(), worldQuat[canon], new THREE.Vector3());
-    canonToNode[canon] = norm;
+    if (!canon) return;
+    (candidates[canon] ??= []).push({ norm, quat: q, node: o });
     if (norm === normName(hipsNode)) {
       o.getWorldPosition(_hipsP);
       hipsWorldY = _hipsP.y;
+      hipsRestLocal = o.position.clone();
     }
   });
-  return { worldQuat, canonToNode, hipsNode, hipsWorldY };
+
+  // ⚠️ حل تعارض: نام دقیق مقدم است — در UAL نود root (با چرخش ‎−90°X‎)
+  // قبل از DEF-hips پیمایش می‌شود و نباید canonical hips را بدزدد!
+  const worldQuat: Record<string, THREE.Quaternion> = {};
+  const canonToNode: Record<string, string> = {};
+  for (const [canon, list] of Object.entries(candidates)) {
+    const pick = list.find((c) => c.norm === canon) ?? list[0];
+    worldQuat[canon] = pick.quat;
+    canonToNode[canon] = pick.norm;
+  }
+
+  // ── والد واقعی + چرخش مفقود بین زنجیره‌ی canonical و درخت واقعی ──
+  const extraQuat: Record<string, THREE.Quaternion> = {};
+  const realParentQuat: Record<string, THREE.Quaternion> = {};
+  for (const [canon, nodeName] of Object.entries(canonToNode)) {
+    const node = nodeByNorm.get(nodeName);
+    const pq = new THREE.Quaternion();
+    const parentNode = node?.parent;
+    if (parentNode) parentNode.matrixWorld.decompose(_decompV, pq, _decompS);
+    realParentQuat[canon] = pq;
+
+    // نزدیک‌ترین والد canonical نگاشت‌شده
+    let p = BONE_PARENT[canon as keyof typeof BONE_PARENT] ?? null;
+    while (p && !worldQuat[p]) p = BONE_PARENT[p as keyof typeof BONE_PARENT] ?? null;
+    if (p && canonToNode[p]) {
+      const parentWorld = nodeWorldQuat.get(canonToNode[p])!;
+      extraQuat[canon] = pq.clone().multiply(parentWorld.clone().invert());
+    } else {
+      // لگن (یا بدون والد canonical): کل زنجیره‌ی بالای سر — مثل root با ‎−90°X‎
+      extraQuat[canon] = pq.clone();
+    }
+  }
+
+  return { worldQuat, canonToNode, hipsNode, hipsWorldY, extraQuat, realParentQuat, hipsRestLocal };
 }
 const _hipsP = new THREE.Vector3();
 
@@ -388,7 +444,7 @@ export function retargetClipFromRest(
   // والد canonical مبدأ — با ترتیب FK روی canons مقصد نمی‌سازد؛
   // ما world مبدأ را مستقل به‌صورت top-down روی درخت مقصد حساب می‌کنیم.
   const srcParentCanon: Record<string, string | null> = {};
-  const BONE_PARENT: Record<string, string | null> = {
+  const PARENT: Record<string, string | null> = {
     spine: 'hips', chest: 'spine', neck: 'chest', head: 'neck',
     upperArmL: 'chest', lowerArmL: 'upperArmL', handL: 'lowerArmL',
     upperArmR: 'chest', lowerArmR: 'upperArmR', handR: 'lowerArmR',
@@ -396,8 +452,8 @@ export function retargetClipFromRest(
     upperLegR: 'hips', lowerLegR: 'upperLegR', footR: 'lowerLegR',
   };
   for (const c of canons) {
-    let p = BONE_PARENT[c] ?? null;
-    while (p && !srcRest.worldQuat[p]) p = BONE_PARENT[p] ?? null;
+    let p = PARENT[c] ?? null;
+    while (p && !srcRest.worldQuat[p]) p = PARENT[p] ?? null;
     srcParentCanon[c] = p;
   }
 
@@ -406,6 +462,9 @@ export function retargetClipFromRest(
   for (const canon of canons) {
     const bone = mapping.target[canon];
     const track = srcRest.canonToNode[canon] ? srcQ[srcRest.canonToNode[canon]] : undefined;
+    // ⚠️ چرخش مفقود بین والد canonical و خود استخوان (root ‎−90°X‎، shoulder و…)
+    const extra = srcRest.extraQuat?.[canon] ?? I;
+    const realParentQ = srcRest.realParentQuat?.[canon] ?? null;
     const times = new Float32Array(nFrames);
     const values = new Float32Array(nFrames * 4);
 
@@ -416,11 +475,9 @@ export function retargetClipFromRest(
       if (track) {
         sampleQuat(track, t, qLocal);
       } else {
-        // track مفقود ⇒ rest محلی مبدأ (نه identity) تا دلتا صفر بماند
-        const rpc = srcParentCanon[canon];
-        const prw = rpc ? srcRest.worldQuat[rpc] : undefined;
-        if (prw && srcRest.worldQuat[canon]) {
-          qLocal.copy(_qTmp.copy(prw).invert()).multiply(srcRest.worldQuat[canon]);
+        // track مفقود ⇒ rest محلی نسبت به «والد واقعی» تا دلتا صفر بماند
+        if (realParentQ && srcRest.worldQuat[canon]) {
+          qLocal.copy(_qTmp.copy(realParentQ).invert()).multiply(srcRest.worldQuat[canon]);
         } else if (srcRest.worldQuat[canon]) {
           qLocal.copy(srcRest.worldQuat[canon]);
         } else {
@@ -428,12 +485,12 @@ export function retargetClipFromRest(
         }
       }
 
-      // world مبدأ top-down: world(t) = parentWorld(t) · local(t)
+      // world مبدأ top-down: world(t) = parentWorld(t) · extra · local(t)
       const pc = srcParentCanon[canon];
       if (pc && qWorldT_set[pc]) {
         parentWorldT.copy(qWorldT_set[pc]);
       } else parentWorldT.identity();
-      qWorldT.copy(parentWorldT).multiply(qLocal);
+      qWorldT.copy(parentWorldT).multiply(extra).multiply(qLocal);
       qWorldT_set[canon] = qWorldT.clone();
 
       // دلتا نسبت به rest مبدأ
@@ -459,16 +516,22 @@ export function retargetClipFromRest(
   if (hipsTrack && mapping.target.hips) {
     const hipsRest = rest.hipsLocalRest.clone();
     const ratio = rest.hipsWorldY / Math.max(0.01, srcRest.hipsWorldY);
+    // دلتای محلی لگن در فضای والد واقعی‌اش است — با چرخش جهانی والد به جهان می‌رود
+    // (مثلاً root مبدأ ‎−90°X‎ دارد؛ بدون این تصحیح محورها جابه‌جا می‌شوند)
+    const parentQ = srcRest.realParentQuat?.hips ?? I;
+    const pRestLocal = srcRest.hipsRestLocal ?? new THREE.Vector3(0, srcRest.hipsWorldY, 0);
     const times = new Float32Array(nFrames);
     const values = new Float32Array(nFrames * 3);
     const p = new THREE.Vector3();
+    const wd = new THREE.Vector3();
     for (let f = 0; f < nFrames; f++) {
       const t = f * dt;
       times[f] = t;
       sampleVec(hipsTrack, t, p);
-      values[f * 3] = hipsRest.x + p.x * ratio;
-      values[f * 3 + 1] = hipsRest.y + (p.y - srcRest.hipsWorldY) * ratio;
-      values[f * 3 + 2] = hipsRest.z + p.z * ratio;
+      wd.copy(p).sub(pRestLocal).applyQuaternion(parentQ).multiplyScalar(ratio);
+      values[f * 3] = hipsRest.x + wd.x;
+      values[f * 3 + 1] = hipsRest.y + wd.y;
+      values[f * 3 + 2] = hipsRest.z + wd.z;
     }
     outTracks.push(new THREE.VectorKeyframeTrack(
       `${mapping.target.hips.name}.position`, Array.from(times), Array.from(values),

@@ -4,8 +4,10 @@
 // ─────────────────────────────────────────────────────────────
 import type { BodyId } from './kaykit';
 import type { HairStyleId, BeardStyleId } from './featuresKaykit';
+import type { Physique } from './reshape';
+import { RACE_PHYSIQUE, DEFAULT_PHYSIQUE } from './reshape';
 
-export type { BodyId, HairStyleId, BeardStyleId };
+export type { BodyId, HairStyleId, BeardStyleId, Physique };
 
 export type RaceId = 'human' | 'elf' | 'orc' | 'dwarf' | 'undead';
 
@@ -26,9 +28,13 @@ export interface CharConfig {
   weapon: string;
   helmet: boolean;
   cape: boolean;
-  height: number; // 0.72 – 1.12
+  height: number; // 0.62 – 1.12
   bulk: number;   // 0.85 – 1.25 (پهنای XZ)
+  /** نسبت‌های اسکلتی — ضدچیبی + اسلایدرهای اندام AAA */
+  physique: Physique;
 }
+
+const PHYS = (race: RaceId): Physique => RACE_PHYSIQUE[race] ?? DEFAULT_PHYSIQUE;
 
 export interface RacePreset {
   id: RaceId;
@@ -40,11 +46,12 @@ export interface RacePreset {
   defaultBulk: number;
   ears: boolean;
   tusks: boolean;
-  defaults: Omit<CharConfig, 'name' | 'race' | 'body' | 'height' | 'bulk' | 'ears' | 'tusks'>;
+  defaults: Omit<CharConfig, 'name' | 'race' | 'body' | 'height' | 'bulk' | 'ears' | 'tusks' | 'physique'>;
   names: string[];
 }
 
 const HUMAN_DEFAULTS = {
+  // (فیزیک از RACE_PHYSIQUE می‌آید)
   skin: '#eab586', hair: 'baked' as HairStyleId, hairColor: '#4a3220',
   beard: 'baked' as BeardStyleId, beardColor: '#4a3220',
   cloth: '#8a3c3c', metal: '#c8c8cf', bone: '#9a96b8',
@@ -157,9 +164,20 @@ export function defaultConfig(race: RaceId = 'human', name?: string): CharConfig
     bulk: r.defaultBulk,
     ears: r.ears,
     tusks: r.tusks,
+    physique: { ...PHYS(race) },
     ...JSON.parse(JSON.stringify(r.defaults)),
   };
 }
+
+/** اسلایدرهای اندام + برچسب فارسی */
+export const PHYSIQUE_SLIDERS: { key: keyof Physique; label: string; min: number; max: number }[] = [
+  { key: 'leg', label: 'طول پا', min: 0.85, max: 1.3 },
+  { key: 'arm', label: 'طول بازو', min: 0.85, max: 1.3 },
+  { key: 'torso', label: 'طول تنه', min: 0.88, max: 1.22 },
+  { key: 'shoulder', label: 'پهنای شانه', min: 0.85, max: 1.3 },
+  { key: 'head', label: 'اندازه سر', min: 0.75, max: 1.15 },
+  { key: 'muscle', label: 'عضله', min: 0.85, max: 1.3 },
+];
 
 const TITLE_SUFFIX = ['آذرخش', 'گرگ‌تیر', 'سایه‌روان', 'قلدر', 'دشت‌گرد', 'آتش‌پیکر', 'بادپا'];
 export function randomName(race: RaceId): string {
@@ -185,6 +203,7 @@ export const HERO_PRESETS: HeroPreset[] = [
       beard: 'baked', beardColor: '#4a3220', ears: false, tusks: false,
       cloth: '#a4413c', metal: '#c8c8cf', bone: '#9a96b8',
       weapon: 'swordShield', helmet: false, cape: true, height: 1.02, bulk: 1.08,
+      physique: { leg: 1.18, arm: 1.10, torso: 1.08, shoulder: 1.16, head: 0.90, muscle: 1.08 },
     },
   },
   {
@@ -195,6 +214,7 @@ export const HERO_PRESETS: HeroPreset[] = [
       beard: 'none', beardColor: '#e8d9a0', ears: true, tusks: false,
       cloth: '#2e6b48', metal: '#d4af37', bone: '#9a96b8',
       weapon: 'crossbow', helmet: false, cape: true, height: 1.06, bulk: 0.92,
+      physique: { leg: 1.26, arm: 1.12, torso: 1.10, shoulder: 1.0, head: 0.86, muscle: 0.92 },
     },
   },
   {
@@ -205,6 +225,7 @@ export const HERO_PRESETS: HeroPreset[] = [
       beard: 'none', beardColor: '#241f16', ears: false, tusks: true,
       cloth: '#4a5a6b', metal: '#8a8f98', bone: '#e6dcc3',
       weapon: 'axe2h', helmet: true, cape: false, height: 1.1, bulk: 1.25,
+      physique: { leg: 1.10, arm: 1.16, torso: 1.14, shoulder: 1.28, head: 0.84, muscle: 1.30 },
     },
   },
   {
@@ -215,6 +236,7 @@ export const HERO_PRESETS: HeroPreset[] = [
       beard: 'long', beardColor: '#a9442e', ears: false, tusks: false,
       cloth: '#6b5a2e', metal: '#d4af37', bone: '#9a96b8',
       weapon: 'sword', helmet: false, cape: true, height: 0.76, bulk: 1.2,
+      physique: { leg: 0.87, arm: 1.02, torso: 1.16, shoulder: 1.30, head: 0.93, muscle: 1.32 },
     },
   },
   {
@@ -225,6 +247,7 @@ export const HERO_PRESETS: HeroPreset[] = [
       beard: 'none', beardColor: '#e8d9a0', ears: true, tusks: false,
       cloth: '#5a4a6b', metal: '#d4af37', bone: '#9a96b8',
       weapon: 'staff', helmet: true, cape: false, height: 1.04, bulk: 0.9,
+      physique: { leg: 1.24, arm: 1.10, torso: 1.08, shoulder: 0.97, head: 0.86, muscle: 0.9 },
     },
   },
   {
@@ -235,6 +258,7 @@ export const HERO_PRESETS: HeroPreset[] = [
       beard: 'none', beardColor: '#1c1c1c', ears: false, tusks: false,
       cloth: '#c9b896', metal: '#6e6e78', bone: '#8d89ad',
       weapon: 'none', helmet: true, cape: false, height: 1, bulk: 1,
+      physique: { leg: 1.14, arm: 1.08, torso: 1.06, shoulder: 1.08, head: 0.9, muscle: 0.96 },
     },
   },
 ];
