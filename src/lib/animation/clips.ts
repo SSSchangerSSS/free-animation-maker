@@ -246,69 +246,106 @@ function waveClip(): THREE.AnimationClip {
   ]);
 }
 
-// ── 7) رقص (Dance) — گروو ۱۰۰ BPM با پمپ دست و استپ‌تاچ ─────
-// ۸ پوز × ۰٫۳ ثانیه — نیمه‌ی اول دست راست بالا، نیمه‌ی دوم چپ.
-// لگن روی هر ضرب می‌افتد، شانه‌ها خلاف لگن می‌چرخند، سر جلو می‌زند.
+// ── 7) رقص (Dance) — کورئوگرافی واقعی ۸ ضربی ۱۲۰ BPM ────────
+// الگوی ۸ ضرب (۴ ثانیه — حلقه):
+//   ضرب ۱-۲: قدم به راست + نقطه‌ی چپ (پمپ دست راست بالا)
+//   ضرب ۳-۴: قدم به چپ + نقطه‌ی راست (پمپ دست چپ بالا)
+//   ضرب ۵-۶: دو قدم عقب به راست — دست‌ها جلو ضربدری
+//   ضرب ۷-۸: باز شدن سینه — دست‌ها باز به بیرون
+// لگن روی هر ضرب به سمت پای وزن می‌افتد، تنه خلاف آن، سر روی ضرب
+// جلو می‌زند؛ زانوها روی هر ضرب فنری می‌کنند (bounce).
 function danceClip(): THREE.AnimationClip {
-  const T = 2.4;
-  const N = 8;
-  const t = Array.from({ length: N + 1 }, (_, i) => i * (T / N));
+  const BPM = 120;
+  const beat = 60 / BPM;           // 0.5s
+  const T = beat * 8;              // 4s
+  const B = 9;                     // ۹ نقطه‌ی کلیدی (۸ ضرب + بستن حلقه)
+  const t: number[] = [];
+  for (let i = 0; i < B; i++) t.push(i * beat);
 
-  // الگوهای هر ضرب (۸تایی — حلقه با تکرار پوز اول بسته می‌شود)
-  const sway = [10, 4, -9, -4, -10, -4, 9, 4];                 // چرخش لگن
-  const tilt = [3.5, 1.2, -3, -1.2, -3.5, -1.2, 3, 1.2];       // کجی لگن
-  const nod = [-2, 5, -2, 5, -2, 5, -2, 5];                    // تکان سر روی ضرب
-  // وزن روی پا: هر ۲ ضرب عوض می‌شود (L L R R L L R R)
-  const weightL = [true, true, false, false, true, true, false, false];
+  const D = Math.PI / 180;
+  void D;
+  type E = [number, number, number];
 
-  const hipsQ: E[] = [];
-  const hipsP: [number, number, number][] = [];
-  const chestF: E[] = [];
-  const spineF: E[] = [];
-  const neckF: E[] = [];
-  const headF: E[] = [];
-  const uaL: E[] = []; const laL: E[] = [];
-  const uaR: E[] = []; const laR: E[] = [];
-  const ulL: E[] = []; const llL: E[] = []; const ftL: E[] = [];
-  const ulR: E[] = []; const llR: E[] = []; const ftR: E[] = [];
+  // helper — پوز پایه‌ی هر ضرب
+  const hipsQ: E[] = [], hipsP: [number, number, number][] = [];
+  const chestF: E[] = [], spineF: E[] = [], neckF: E[] = [], headF: E[] = [];
+  const uaL: E[] = [], laL: E[] = [], uaR: E[] = [], laR: E[] = [];
+  const ulL: E[] = [], llL: E[] = [], ftL: E[] = [];
+  const ulR: E[] = [], llR: E[] = [], ftR: E[] = [];
 
-  for (let i = 0; i < N; i++) {
-    const s = sway[i], tl = tilt[i];
-    const pump = i % 2 === 0;          // پمپ دست روی ضرب‌های فرد
-    const wl = weightL[i];
-    const wLs = wl ? 1 : -1;           // جهت کجی وزن
+  // وزن: ضرب فرد وزن راست، زوج چپ (قدم‌ها)
+  const sway = [8, -6, -8, 6, 9, -7, -9, 7];        // چرخش Y لگن (پیچ)
+  const drop = [0.05, 0.028, 0.05, 0.028, 0.055, 0.03, 0.05, 0.03]; // نشستن لگن روی ضرب
+  const nod  = [-4, 3, -4, 3, -5, 3, -5, 3];        // تکان سر روی ضرب
 
-    hipsQ.push([0, s, tl]);
-    hipsP.push([0.028 * wLs, pump ? -0.014 : -0.062, 0.014 * wLs]);
-    chestF.push([5, -s * 0.7, -tl * 0.55]);
-    spineF.push([2.5, -s * 0.35, -tl * 0.3]);
-    neckF.push([-1, -s * 0.4, tl * 0.4]);
-    headF.push([nod[i] * 1.4, -s * 0.9, tl * 0.9]);
+  for (let i = 0; i < 8; i++) {
+    const s = sway[i];
+    const d = drop[i];
+    const wRight = i % 2 === 0; // وزن روی راست در ضرب‌های ۱/۳/۵/۷
 
-    if (i < 4) {
-      // دست راست بالا پمپ — مشت بالای سر در اوج، چپ پایین تاب
-      uaR.push(pump ? [-16, 0, -112] : [-8, 0, -142]);
-      laR.push([0, pump ? 58 : 92, 0]);
-      uaL.push([pump ? 8 : 0, 0, pump ? -44 : -66]);
-      laL.push([0, pump ? -14 : -44, 0]);
+    // لگن: پیچ + کجی به سمت پای وزن + نشستن
+    hipsQ.push([0, s, wRight ? 4 : -4]);
+    hipsP.push([wRight ? -0.02 : 0.02, -d, wRight ? 0.015 : -0.015]);
+
+    // تنه: خلاف لگن + خم جزئی رو به جلو در ضرب‌های ۵-۶
+    const lean = i >= 4 && i <= 5 ? 6 : 2.5;
+    chestF.push([lean, -s * 0.8, wRight ? -2.5 : 2.5]);
+    spineF.push([lean * 0.5, -s * 0.4, wRight ? -1.5 : 1.5]);
+    neckF.push([-1, s * 0.35, wRight ? 1.5 : -1.5]);
+    headF.push([nod[i], s * 0.75, wRight ? 2 : -2]);
+
+    if (i < 2) {
+      // ضرب ۱-۲: پمپ دست راست بالا، چپ روی سینه‌ی پایین
+      const pump = i === 0;
+      uaR.push(pump ? [-18, 0, -128] : [-10, 0, -112]);
+      laR.push([0, pump ? 48 : 74, 0]);
+      uaL.push([6, 0, -46]);
+      laL.push([0, -74, 0]);
+    } else if (i < 4) {
+      // ضرب ۳-۴: پمپ دست چپ بالا، راست پایین تاب
+      const pump = i === 2;
+      uaL.push(pump ? [-18, 0, 128] : [-10, 0, 112]);
+      laL.push([0, pump ? -48 : -74, 0]);
+      uaR.push([6, 0, 46]);
+      laR.push([0, 74, 0]);
+    } else if (i < 6) {
+      // ضرب ۵-۶: دست‌ها جلو — ضرب‌آهنگ «جلو-عقب» با آرنج
+      const fwd = i === 4;
+      uaL.push([-24, 0, -52]);
+      laL.push([0, fwd ? -88 : -62, 0]);
+      uaR.push([-24, 0, 52]);
+      laR.push([0, fwd ? 88 : 62, 0]);
     } else {
-      // تعویض: چپ بالا پمپ، راست پایین تاب
-      uaL.push(pump ? [-16, 0, -112] : [-8, 0, -142]);
-      laL.push([0, pump ? -58 : -92, 0]);
-      uaR.push([pump ? 8 : 0, 0, pump ? 44 : 66]);
-      laR.push([0, pump ? 14 : 44, 0]);
+      // ضرب ۷-۸: دست‌ها باز به بیرون — سینه‌ی باز
+      const open = i === 6;
+      uaL.push([open ? -34 : -22, 0, -84]);
+      laL.push([0, -30, 0]);
+      uaR.push([open ? -34 : -22, 0, 84]);
+      laR.push([0, 30, 0]);
     }
 
-    // پاها — استپ‌تاچ: پای وزن صاف و باز، پای دیگر نیمه‌بلند با زانو
-    if (wl) {
-      ulL.push([-3, 0, -7]); llL.push([6, 0, 0]); ftL.push([-2, 0, 0]);
-      ulR.push([-16, 0, 9]); llR.push([34, 0, 0]); ftR.push([-14, 0, 0]);
+    // پاها — قدم واقعی: پای وزن صاف، پای دیگر بلند شده به سمت قدم بعدی
+    if (wRight) {
+      // وزن راست: چپ نزدیک می‌شود (نقطه‌ی زمین) یا قدم عقب
+      const back = i >= 4;
+      ulL.push(back ? [14, 0, -8] : [-8, 0, -7]);
+      llL.push(back ? [26, 0, 0] : [16, 0, 0]);
+      ftL.push(back ? [-16, 0, 0] : [-6, 0, 0]);
+      ulR.push([-3, 0, 5]);
+      llR.push([6, 0, 0]);
+      ftR.push([-2, 0, 0]);
     } else {
-      ulL.push([-16, 0, -9]); llL.push([34, 0, 0]); ftL.push([-14, 0, 0]);
-      ulR.push([-3, 0, 7]); llR.push([6, 0, 0]); ftR.push([-2, 0, 0]);
+      const back = i >= 4;
+      ulR.push(back ? [14, 0, 8] : [-8, 0, 7]);
+      llR.push(back ? [26, 0, 0] : [16, 0, 0]);
+      ftR.push(back ? [-16, 0, 0] : [-6, 0, 0]);
+      ulL.push([-3, 0, -5]);
+      llL.push([6, 0, 0]);
+      ftL.push([-2, 0, 0]);
     }
   }
-  // بستن حلقه
+
+  // بستن حلقه = کپی ضرب ۱
   hipsQ.push([...hipsQ[0]] as E);
   hipsP.push([...hipsP[0]] as [number, number, number]);
   chestF.push([...chestF[0]] as E); spineF.push([...spineF[0]] as E);

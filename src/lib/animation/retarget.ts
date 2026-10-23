@@ -74,8 +74,11 @@ function canonBase(norm: string): { base: string; rank: number } | null {
   const simple: Record<string, [string, number]> = {
     hips: ['hips', 90], pelvis: ['hips', 80], hip: ['hips', 70], root: ['hips', 25],
     spine: ['spine', 90], torso: ['spine', 55],
+    // Universal rig (Quaternius): spine_01/02/03 و neck_01
+    // spine_02 برنده می‌شود (spine_01 جریمه‌ی نسلی می‌گیرد) — مفصل میانی کمر
+    spine01: ['spine', 88], spine02: ['spine', 86], spine03: ['chest', 88],
     spine1: ['chest', 50], spine2: ['chest', 55], chest: ['chest', 90], upperchest: ['chest', 80],
-    neck: ['neck', 90], head: ['head', 90],
+    neck: ['neck', 90], neck01: ['neck', 88], head: ['head', 90],
   };
   if (simple[norm]) { const [b, r] = simple[norm]; return { base: b, rank: r }; }
 

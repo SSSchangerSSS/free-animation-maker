@@ -8,8 +8,10 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { buildKaykitCharacter, loadBody, type CharacterBuild, type WeaponMode, type GripTweak } from '../character';
+import { buildV3Character, V3_BODIES, type V3Build } from '../character/universal';
 import type { CharConfig } from '../character/types';
 import { buildClipLibrary, ANIM_DEFS } from '../animation/clips';
+import { AntiClip } from '../animation/anticlip';
 import { assetUrl } from '../base-path';
 import {
   importExternalModel, detectHumanoidBones, measureRest, measureSourceRest,
@@ -164,8 +166,16 @@ function prettify(name: string): string {
 // انیمیشن‌های بومی KayKit با سلاح ریس شده‌اند ⇒ دست؛ ریتارگت‌شده‌ها
 // و تعاملات اجتماعی ⇒ سلاح پشت کمر تا تیغه وارد بدن نشود.
 const KK_HAND_OFF = /^(Unarmed_|Sit_|Lie_|PickUp|Use_Item|Interact|Cheer)/;
-function weaponModeFor(animId: string): WeaponMode {
+/**
+ * سیاست سلاح — بدنه‌های V3: سلاح در دست برای همه‌ی حالت‌های طبیعی
+ * (ایست/راه‌رفتن/رزم/جادو) و پشت کمر برای حرکاتی که دست‌ها کاملاً
+ * مشغول‌اند (نشستن/درازکشیدن/رقص/شنا/…) — ضدنفوذ موتور anticlip
+ * در حالت دست فعال است.
+ */
+const V3_HAND_OFF = /Dance|Sit_|Lie_|PickUp|Interact|Use_Item|Swim|Drive|Roll|Push_|Fixing|Death|Cheer|Wave|^bow$|^death$|^hit$|^dance$|^wave$|^cheer$/i;
+function weaponModeFor(animId: string, v3 = false): WeaponMode {
   const [src, name] = animId.includes(':') ? [animId.slice(0, animId.indexOf(':')), animId.slice(animId.indexOf(':') + 1)] : ['model', animId];
+  if (v3) return V3_HAND_OFF.test(name) || V3_HAND_OFF.test(animId) ? 'back' : 'hand';
   if (src === 'kk') return KK_HAND_OFF.test(name) ? 'back' : 'hand';
   if (src === 'ual') return /^Sword_/.test(name) ? 'hand' : 'back';
   if (src === 'proc') return /^(guard|attack|block)$/.test(name) ? 'hand' : 'back';
@@ -176,9 +186,10 @@ function weaponModeFor(animId: string): WeaponMode {
 // (چنگ مبدأ با handslot تی‌کی‌یت نمی‌خواند — تیغه را می‌چرخانیم تا
 // رو به بالا/بیرون بایستد و داخل پاها فرو نرود)
 const GRIP_TWEAKS: [RegExp, GripTweak][] = [
-  [/^ual:Sword_/, { rz: 2.9, ry: -0.2, py: 0.006 }],
+  // توییک چنگ فقط برای بدنه‌های KayKit — بدنه‌های V3 پروفایل داده‌محور خودشان را دارند
 ];
-function gripTweakFor(animId: string): GripTweak | null {
+function gripTweakFor(animId: string, v3 = false): GripTweak | null {
+  if (v3) return null;
   for (const [re, tw] of GRIP_TWEAKS) if (re.test(animId)) return tw;
   return null;
 }
@@ -204,7 +215,7 @@ export class Engine {
   private ro?: ResizeObserver;
   private container: HTMLElement;
 
-  private character?: CharacterBuild;
+  private character?: CharacterBuild | V3Build;
   private lastStructural = '';
   private lastColors = '';
   private mixer?: THREE.AnimationMixer;
@@ -213,6 +224,8 @@ export class Engine {
   private anims: EngineAnimInfo[] = [];
   private clips: Record<string, THREE.AnimationClip> = {};
   private procClips: Record<string, THREE.AnimationClip>;
+  /** ضدنفوذ سلاح — فقط بدنه‌های V3 با سلاح در دست */
+  private anticlip?: AntiClip;
 
   private imported?: ImportedModel;
   private lastConfig?: CharConfig;
@@ -406,6 +419,22 @@ export class Engine {
     // this.mixer همان mixer مدل واردی است و قبلاً دوبار جلو می‌رفت
     this.mixer?.update(dt);
     this.character?.update(dt);
+    // ضدنفوذ — بعد از انیمیشن/چنگ، قبل از رندر
+    if (this.anticlip && this.character && 'weapon' in this.character && this.character.weapon
+      && this.character.getWeaponMode() === 'hand' && this.kaykitMapping) {
+      const w = this.character.weapon;
+      const handBone = w.def.hand === 'l' ? this.character.handBones.l : this.character.handBones.r;
+      if (handBone) {
+        handBone.updateWorldMatrix(true, false);
+        // تیغه در فضای محلی دست: ماتریس گروه × نقطه‌ی خام × scale
+        const gm = new THREE.Matrix4().compose(
+          w.group.position, w.group.quaternion, new THREE.Vector3().setScalar(w.def.scale),
+        );
+        const from = new THREE.Vector3(...w.def.bladeFrom).multiplyScalar(w.def.scale).applyMatrix4(gm);
+        const to = new THREE.Vector3(...w.def.bladeTo).multiplyScalar(w.def.scale).applyMatrix4(gm);
+        this.anticlip.update(handBone, w.group, from, to);
+      }
+    }
     this.controls.update();
     this.renderer.render(this.scene, this.camera);
   }
@@ -468,7 +497,7 @@ export class Engine {
     // A02 — منبع rest مرجع KayKit (بدنه‌ی دست‌نخورده، بدون reshape) — یک‌بار
     if (!this.kaykitSrcRest && this.lastConfig?.body) {
       try {
-        const loaded = await loadBody(this.lastConfig.body);
+        const loaded = await loadBody(this.lastConfig.body as Parameters<typeof loadBody>[0]);
         if (!alive()) return;
         this.kaykitSrcRest = measureSourceRest(loaded.pristine, mapping.target.hips?.name ?? 'hips');
       } catch { /* بدون منبع rest، کلیپ‌های kk به مدل واردی منتقل نمی‌شوند */ }
@@ -548,7 +577,7 @@ export class Engine {
     const ph = cfg.physique;
     const structural = `${cfg.race}|${cfg.body}|${cfg.hair}|${cfg.beard}|${cfg.ears}|${cfg.tusks}|${cfg.weapon}|${cfg.helmet}|${cfg.cape}|${cfg.height.toFixed(3)}|${cfg.bulk.toFixed(3)}`
       + `|${ph ? [ph.leg, ph.arm, ph.torso, ph.shoulder, ph.head, ph.muscle].map((v) => v.toFixed(3)).join(',') : '-'}`;
-    const colors = `${cfg.skin}|${cfg.hairColor}|${cfg.beardColor}|${cfg.cloth}|${cfg.metal}|${cfg.bone}`;
+    const colors = `${cfg.skin}|${cfg.hairColor}|${cfg.beardColor}|${cfg.cloth}|${cfg.metal}|${cfg.bone}|${cfg.eye ?? '-'}`;
 
     if (structural === this.lastStructural && this.character) {
       if (colors !== this.lastColors) {
@@ -567,7 +596,9 @@ export class Engine {
     try {
       if (this.mode !== 'creator') this.exitImported();
       if (this.disposed || seq !== this.buildSeq) return;
-      const build = await buildKaykitCharacter(cfg);
+      const build: CharacterBuild | V3Build = cfg.body in V3_BODIES
+        ? await buildV3Character(cfg)
+        : await buildKaykitCharacter(cfg);
       if (this.disposed || seq !== this.buildSeq) { build.dispose(); return; }
       const prev = this.character;
       if (prev) {
@@ -594,6 +625,15 @@ export class Engine {
       // ثبت کلیپ‌های این بدنه + ریتارگت کتابخانه‌ها
       this.registerKaykitClips(build.animations);
       await this.buildRetargetedLibrary();
+      // ضدنفوذ — فقط V3 با سلاح (پروفایل داده‌محور از weapons3)
+      this.anticlip?.dispose();
+      this.anticlip = undefined;
+      if (cfg.body in V3_BODIES && this.kaykitMapping && 'weapon' in build && build.weapon) {
+        this.anticlip = new AntiClip({
+          bones: this.kaykitMapping.target,
+          bulk: cfg.bulk,
+        });
+      }
       // A09 — بعد از await طولانی کتابخانه، درخواست جدیدتری در راه است؟
       if (this.disposed || seq !== this.buildSeq) return;
 
@@ -647,8 +687,11 @@ export class Engine {
     this.currentAnim = id;
     // ── وضعیت سلاح برای این انیمیشن (فقط وقتی سلاح فعال داریم) ──
     if (this.character && this.lastConfig && this.lastConfig.weapon !== 'none') {
-      this.character.setWeaponMode(weaponModeFor(id));
-      this.character.setGripTweak(gripTweakFor(id));
+      const isV3 = this.lastConfig.body in V3_BODIES;
+      this.character.setWeaponMode(weaponModeFor(id, isV3));
+      const clipTweak = gripTweakFor(id, isV3);
+      const weaponTweak = isV3 && 'weapon' in this.character ? this.character.weapon?.def.tweak ?? null : null;
+      this.character.setGripTweak(clipTweak ?? weaponTweak);
     }
     // A11 — UI از تغییر انیمیشن (شامل بازگشت از one-shot) باخبر می‌شود
     this.onAnimChange?.(id);
@@ -799,6 +842,8 @@ export class Engine {
   dispose() {
     // A09 — همه‌ی کارهای async در راه باطل می‌شوند
     this.disposed = true;
+    this.anticlip?.dispose();
+    this.anticlip = undefined;
     this.buildSeq++;
     this.importSeq++;
     this.libraryGen++;

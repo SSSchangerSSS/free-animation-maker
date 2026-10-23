@@ -22,6 +22,7 @@ import {
 import { cn } from '@/lib/utils';
 import { Engine, type EngineAnimInfo, type AnimCat } from '@/lib/three/engine';
 import { BODIES } from '@/lib/character/kaykit';
+import { V3_BODIES, V3_WEAPONS } from '@/lib/character/universal';
 import { TARGET_HEIGHT } from '@/lib/character';
 import { assetUrl } from '@/lib/base-path';
 import {
@@ -46,6 +47,29 @@ const CAT_LABELS: Record<AnimCat | 'all' | 'model', string> = {
 const ORIGIN_BADGE: Record<string, string> = {
   kaykit: 'کی‌کیت', ual: 'جهانی', proc: 'رویه‌ای', model: 'مدل',
 };
+
+const EYE_COLORS = ['#3a2416', '#5a3d20', '#7a5a2e', '#3f7a52', '#3a6a8a', '#5a4a8a', '#8a4a1f', '#b8d24a', '#8a2a2a', '#c8c8cf'];
+
+// ── دسترسی یکنواخت به تعریف بدنه (KayKit یا V3) ────────────
+interface UnifiedBodyInfo {
+  label: string; desc: string;
+  weapons: { id: string; label: string }[];
+  defaultWeapon: string;
+  helmet?: { label: string };
+  cape?: { label: string };
+  targetHeight: number;
+}
+function bodyInfo(id: string): UnifiedBodyInfo {
+  const kk = BODIES[id as keyof typeof BODIES];
+  if (kk) return { label: kk.label, desc: kk.desc, weapons: kk.weapons, defaultWeapon: kk.defaultWeapon, helmet: kk.helmet, cape: kk.cape, targetHeight: TARGET_HEIGHT[id] ?? 1.78 };
+  const v3 = V3_BODIES[id];
+  if (v3) return {
+    label: v3.label, desc: v3.desc,
+    weapons: v3.weapons.map((w) => ({ id: w, label: w === 'none' ? 'بی‌سلاح' : V3_WEAPONS[w]?.label ?? w })),
+    defaultWeapon: v3.defaultWeapon, targetHeight: v3.height,
+  };
+  return { label: id, desc: '', weapons: [], defaultWeapon: 'none', targetHeight: 1.78 };
+}
 
 // ── کامپوننت‌های کوچک ────────────────────────────────────────
 function SectionTitle({ children }: { children: React.ReactNode }) {
@@ -160,9 +184,10 @@ function CustomizationPanel({ cfg, set }: {
 }) {
   const race = RACES[cfg.race];
   const RaceIcon = RACE_ICONS[cfg.race];
-  const bodyDef = BODIES[cfg.body];
+  const bodyDef = bodyInfo(cfg.body);
   const weaponOptions = bodyDef.weapons;
   const isUndead = cfg.race === 'undead';
+  const isV3 = cfg.body in V3_BODIES;
 
   return (
     <div className="flex h-full flex-col">
@@ -253,9 +278,9 @@ function CustomizationPanel({ cfg, set }: {
             <SectionTitle>بدنه‌ی {race.label}</SectionTitle>
             {race.bodies.length > 1 ? (
               <StyleGrid
-                options={race.bodies.map((b) => ({ id: b, label: BODIES[b].label }))}
+                options={race.bodies.map((b) => ({ id: b, label: bodyInfo(b).label }))}
                 value={cfg.body}
-                onChange={(b) => set({ body: b, weapon: BODIES[b].defaultWeapon, helmet: cfg.helmet && !!BODIES[b].helmet })}
+                onChange={(b) => set({ body: b, weapon: bodyInfo(b).defaultWeapon, helmet: cfg.helmet && !!bodyInfo(b).helmet })}
                 cols={2}
               />
             ) : (
@@ -288,6 +313,12 @@ function CustomizationPanel({ cfg, set }: {
               <SectionTitle>رنگ ریش</SectionTitle>
               <Swatches colors={HAIR_COLORS} value={cfg.beardColor} onChange={(c) => set({ beardColor: c })} />
             </div>
+            {isV3 && (
+              <div>
+                <SectionTitle>رنگ چشم</SectionTitle>
+                <Swatches colors={EYE_COLORS} value={cfg.eye} onChange={(c) => set({ eye: c })} />
+              </div>
+            )}
             {!isUndead && (
               <div className="grid grid-cols-2 gap-1.5">
                 <ToggleRow label="گوش الف" value={cfg.ears} onChange={(v) => set({ ears: v })} />
@@ -301,7 +332,7 @@ function CustomizationPanel({ cfg, set }: {
             <SectionTitle>قد و تنومندی</SectionTitle>
             <SliderRow label="قد" value={cfg.height} min={0.62} max={1.12} step={0.01}
               onChange={(v) => set({ height: v })}
-              format={(v) => `${Math.round((TARGET_HEIGHT[cfg.body] ?? 1.78) * v * 100)} سانتی‌متر`} />
+              format={(v) => `${Math.round(bodyInfo(cfg.body).targetHeight * v * 100)} سانتی‌متر`} />
             <SliderRow label="تنومندی" value={cfg.bulk} min={0.85} max={1.25} step={0.01}
               onChange={(v) => set({ bulk: v })} format={(v) => `${Math.round(v * 100)}٪`} />
 

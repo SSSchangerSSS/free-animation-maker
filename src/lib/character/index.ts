@@ -74,7 +74,7 @@ function colorsFromCfg(cfg: CharConfig): RecolorColors {
 const maskCache = new Map<BodyId, MaskSet>();
 
 export async function buildKaykitCharacter(cfg: CharConfig): Promise<CharacterBuild> {
-  const loaded = await loadBody(cfg.body);
+  const loaded = await loadBody(cfg.body as BodyId);
   const def = loaded.def;
   const phys: Physique = cfg.physique ?? DEFAULT_PHYSIQUE;
   const root = skeletonClone(loaded.pristine) as THREE.Group;

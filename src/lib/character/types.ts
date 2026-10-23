@@ -4,6 +4,7 @@
 // ─────────────────────────────────────────────────────────────
 import type { BodyId } from './kaykit';
 import { BODIES } from './kaykit';
+import { V3_BODIES } from './universal';
 import type { HairStyleId, BeardStyleId } from './featuresKaykit';
 import type { Physique } from './reshape';
 import { RACE_PHYSIQUE, DEFAULT_PHYSIQUE } from './reshape';
@@ -15,12 +16,15 @@ export type RaceId = 'human' | 'elf' | 'orc' | 'dwarf' | 'undead';
 export interface CharConfig {
   name: string;
   race: RaceId;
-  body: BodyId;
+  /** شناسه بدنه — KayKit یا V3 */
+  body: string;
   skin: string;
   hair: HairStyleId;
   hairColor: string;
   beard: BeardStyleId;
   beardColor: string;
+  /** رنگ عنبیه — V3 (بدنه‌های Quaternius) */
+  eye: string;
   ears: boolean;
   tusks: boolean;
   cloth: string;
@@ -41,8 +45,8 @@ export interface RacePreset {
   id: RaceId;
   label: string;
   desc: string;
-  bodies: BodyId[];
-  defaultBody: BodyId;
+  bodies: string[];
+  defaultBody: string;
   defaultHeight: number;
   defaultBulk: number;
   ears: boolean;
@@ -55,6 +59,7 @@ const HUMAN_DEFAULTS = {
   // (فیزیک از RACE_PHYSIQUE می‌آید)
   skin: '#eab586', hair: 'baked' as HairStyleId, hairColor: '#4a3220',
   beard: 'baked' as BeardStyleId, beardColor: '#4a3220',
+  eye: '#5a3d20',
   cloth: '#8a3c3c', metal: '#c8c8cf', bone: '#9a96b8',
   weapon: 'sword', helmet: false, cape: false,
 };
@@ -62,6 +67,7 @@ const HUMAN_DEFAULTS = {
 const ELF_DEFAULTS = {
   skin: '#f4dcc0', hair: 'baked' as HairStyleId, hairColor: '#e8d9a0',
   beard: 'none' as BeardStyleId, beardColor: '#e8d9a0',
+  eye: '#3f7a52',
   cloth: '#3d5a44', metal: '#d4af37', bone: '#9a96b8',
   weapon: 'none', helmet: false, cape: false,
 };
@@ -69,6 +75,7 @@ const ELF_DEFAULTS = {
 const ORC_DEFAULTS = {
   skin: '#6f8f4f', hair: 'mohawk' as HairStyleId, hairColor: '#1c1c1c',
   beard: 'none' as BeardStyleId, beardColor: '#241f16',
+  eye: '#8a4a1f',
   cloth: '#5b4a35', metal: '#8a8f98', bone: '#e6dcc3',
   weapon: 'axe', helmet: false, cape: false,
 };
@@ -76,6 +83,7 @@ const ORC_DEFAULTS = {
 const DWARF_DEFAULTS = {
   skin: '#e0a878', hair: 'short' as HairStyleId, hairColor: '#a9442e',
   beard: 'full' as BeardStyleId, beardColor: '#a9442e',
+  eye: '#4a5a2e',
   cloth: '#6b5a2e', metal: '#c8c8cf', bone: '#9a96b8',
   weapon: 'sword', helmet: false, cape: false,
 };
@@ -83,6 +91,7 @@ const DWARF_DEFAULTS = {
 const UNDEAD_DEFAULTS = {
   skin: '#8d89ad', hair: 'none' as HairStyleId, hairColor: '#1c1c1c',
   beard: 'none' as BeardStyleId, beardColor: '#1c1c1c',
+  eye: '#b8d24a',
   cloth: '#c9b896', metal: '#6e6e78', bone: '#8d89ad',
   weapon: 'none', helmet: true, cape: false,
 };
@@ -90,7 +99,8 @@ const UNDEAD_DEFAULTS = {
 export const RACES: Record<RaceId, RacePreset> = {
   human: {
     id: 'human', label: 'انسان', desc: 'متعادل و سازگار — از راهزن تا پالادین',
-    bodies: ['Rogue', 'Knight', 'Barbarian', 'Mage'], defaultBody: 'Knight',
+    bodies: ['V3_Ranger', 'V3_Peasant', 'V3_Bare', 'Knight', 'Barbarian', 'Rogue', 'Mage'],
+    defaultBody: 'V3_Ranger',
     defaultHeight: 1, defaultBulk: 1, ears: false, tusks: false,
     defaults: HUMAN_DEFAULTS,
     names: ['آریوبرزن', 'رستم', 'سهراب', 'گیو', 'بهرام', 'ژوبین', 'اردشیر', 'طوس'],
@@ -208,6 +218,8 @@ const ConfigSchema = z.object({
   hairColor: hexColor,
   beard: z.enum(['baked', 'none', 'stubble', 'full', 'long']),
   beardColor: hexColor,
+  /** V3 — رنگ چشم؛ برای سازگاری پریست‌های قدیمی catch دارد */
+  eye: hexColor.catch('#5a3d20'),
   ears: z.boolean(),
   tusks: z.boolean(),
   cloth: hexColor,
@@ -235,21 +247,24 @@ export function validatePreset(data: unknown): CharConfig | null {
   if (!parsed.success) return null;
   const c = parsed.data.config;
   const race = RACES[c.race];
-  // نرمال‌سازی ارجاع‌های متقابل — body باید به نژاد تعلق داشته باشد
-  const body = (race.bodies as string[]).includes(c.body) && c.body in BODIES
+  // نرمال‌سازی ارجاع‌های متقابل — body باید به نژاد تعلق داشته باشد (V3 یا KayKit)
+  const bodyKnown = c.body in BODIES || c.body in V3_BODIES;
+  const body = bodyKnown && (race.bodies as string[]).includes(c.body)
     ? c.body as CharConfig['body']
     : race.defaultBody;
-  const bodyDef = BODIES[body];
-  const weapon = bodyDef.weapons.some((w) => w.id === c.weapon)
-    ? c.weapon
-    : bodyDef.defaultWeapon;
+  const v3Def = c.body in V3_BODIES ? V3_BODIES[c.body] : null;
+  const weaponIds = v3Def
+    ? v3Def.weapons
+    : BODIES[body as BodyId]?.weapons.map((w) => w.id) ?? [];
+  const defaultWeapon = v3Def ? v3Def.defaultWeapon : BODIES[body as BodyId]?.defaultWeapon;
+  const weapon = weaponIds.includes(c.weapon) ? c.weapon : defaultWeapon;
   return {
     ...c,
     name: c.name.trim() || 'قهرمان',
     body,
     weapon,
-    helmet: bodyDef.helmet ? c.helmet : false,
-    cape: bodyDef.cape ? c.cape : false,
+    helmet: !v3Def && BODIES[body as BodyId]?.helmet ? c.helmet : false,
+    cape: !v3Def && BODIES[body as BodyId]?.cape ? c.cape : false,
   };
 }
 
@@ -264,11 +279,22 @@ export interface HeroPreset { id: string; label: string; desc: string; cfg: Char
 
 export const HERO_PRESETS: HeroPreset[] = [
   {
+    id: 'v3_hero', label: 'اردشیر تیزآب', desc: 'شوالیه‌ی V3 — بدن واقعی و کیت شانس‌دار',
+    cfg: {
+      name: 'اردشیر تیزآب', race: 'human', body: 'V3_Ranger',
+      skin: '#eab586', hair: 'long', hairColor: '#4a3220',
+      beard: 'full', beardColor: '#4a3220', eye: '#5a3d20', ears: false, tusks: false,
+      cloth: '#8a3c3c', metal: '#c8c8cf', bone: '#9a96b8',
+      weapon: 'sword', helmet: false, cape: false, height: 1.02, bulk: 1.05,
+      physique: { leg: 1, arm: 1, torso: 1, shoulder: 1.04, head: 1, muscle: 1 },
+    },
+  },
+  {
     id: 'warrior', label: 'آریوبرزن آذرخش', desc: 'پالادین انسان — شمشیر و سپر',
     cfg: {
       name: 'آریوبرزن آذرخش', race: 'human', body: 'Knight',
       skin: '#eab586', hair: 'baked', hairColor: '#4a3220',
-      beard: 'baked', beardColor: '#4a3220', ears: false, tusks: false,
+      beard: 'baked', beardColor: '#4a3220', eye: '#5a3d20', ears: false, tusks: false,
       cloth: '#a4413c', metal: '#c8c8cf', bone: '#9a96b8',
       weapon: 'swordShield', helmet: false, cape: true, height: 1.02, bulk: 1.08,
       physique: { leg: 1.18, arm: 1.10, torso: 1.08, shoulder: 1.16, head: 0.90, muscle: 1.08 },
@@ -279,7 +305,7 @@ export const HERO_PRESETS: HeroPreset[] = [
     cfg: {
       name: 'ائارین سایه‌روان', race: 'elf', body: 'Rogue_Hooded',
       skin: '#f4dcc0', hair: 'baked', hairColor: '#e8d9a0',
-      beard: 'none', beardColor: '#e8d9a0', ears: true, tusks: false,
+      beard: 'none', beardColor: '#e8d9a0', eye: '#3f7a52', ears: true, tusks: false,
       cloth: '#2e6b48', metal: '#d4af37', bone: '#9a96b8',
       weapon: 'crossbow', helmet: false, cape: true, height: 1.06, bulk: 0.92,
       physique: { leg: 1.26, arm: 1.12, torso: 1.10, shoulder: 1.0, head: 0.86, muscle: 0.92 },
@@ -290,7 +316,7 @@ export const HERO_PRESETS: HeroPreset[] = [
     cfg: {
       name: 'گروش‌نک قلدر', race: 'orc', body: 'Barbarian',
       skin: '#6f8f4f', hair: 'mohawk', hairColor: '#1c1c1c',
-      beard: 'none', beardColor: '#241f16', ears: false, tusks: true,
+      beard: 'none', beardColor: '#241f16', eye: '#8a4a1f', ears: false, tusks: true,
       cloth: '#4a5a6b', metal: '#8a8f98', bone: '#e6dcc3',
       weapon: 'axe2h', helmet: true, cape: false, height: 1.1, bulk: 1.25,
       physique: { leg: 1.10, arm: 1.16, torso: 1.14, shoulder: 1.28, head: 0.84, muscle: 1.30 },
@@ -301,7 +327,7 @@ export const HERO_PRESETS: HeroPreset[] = [
     cfg: {
       name: 'تورین تبرکوه', race: 'dwarf', body: 'Knight',
       skin: '#e0a878', hair: 'short', hairColor: '#a9442e',
-      beard: 'long', beardColor: '#a9442e', ears: false, tusks: false,
+      beard: 'long', beardColor: '#a9442e', eye: '#4a5a2e', ears: false, tusks: false,
       cloth: '#6b5a2e', metal: '#d4af37', bone: '#9a96b8',
       weapon: 'sword', helmet: false, cape: true, height: 0.76, bulk: 1.2,
       physique: { leg: 0.87, arm: 1.02, torso: 1.16, shoulder: 1.30, head: 0.93, muscle: 1.32 },
@@ -312,7 +338,7 @@ export const HERO_PRESETS: HeroPreset[] = [
     cfg: {
       name: 'لثارئل افسون‌خوان', race: 'elf', body: 'Mage',
       skin: '#fbeedd', hair: 'long', hairColor: '#e8d9a0',
-      beard: 'none', beardColor: '#e8d9a0', ears: true, tusks: false,
+      beard: 'none', beardColor: '#e8d9a0', eye: '#3f7a52', ears: true, tusks: false,
       cloth: '#5a4a6b', metal: '#d4af37', bone: '#9a96b8',
       weapon: 'staff', helmet: true, cape: false, height: 1.04, bulk: 0.9,
       physique: { leg: 1.24, arm: 1.10, torso: 1.08, shoulder: 0.97, head: 0.86, muscle: 0.9 },
@@ -323,7 +349,7 @@ export const HERO_PRESETS: HeroPreset[] = [
     cfg: {
       name: 'استخوان‌ترک گوربان', race: 'undead', body: 'Skeleton_Warrior',
       skin: '#8d89ad', hair: 'none', hairColor: '#1c1c1c',
-      beard: 'none', beardColor: '#1c1c1c', ears: false, tusks: false,
+      beard: 'none', beardColor: '#1c1c1c', eye: '#b8d24a', ears: false, tusks: false,
       cloth: '#c9b896', metal: '#6e6e78', bone: '#8d89ad',
       weapon: 'none', helmet: true, cape: false, height: 1, bulk: 1,
       physique: { leg: 1.14, arm: 1.08, torso: 1.06, shoulder: 1.08, head: 0.9, muscle: 0.96 },
