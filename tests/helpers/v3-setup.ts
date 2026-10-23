@@ -111,11 +111,14 @@ export async function prepareBody(glbFile: string): Promise<PreparedBody> {
   return { rig, clips, hand };
 }
 
-/** گروه ترنسفورم سلاح در فضای دست (بدون مش — ارزیابی با پروفایل کپسولی) */
+/** گروه ترنسفورم سلاح در فضای دست (بدون مش — ارزیابی با پروفایل کپسولی)
+ *  ⚠️ باید دقیقاً مثل runtime (universal.ts) scale داشته باشد — فرزندان
+ *  گروه مثل grip2 با scale ضرب می‌شوند؛ نبودِ آن نقطهٔ چنگ را ~۳٫۸× دور می‌برد */
 export function makeWeaponGroup(def: typeof V3_WEAPONS[string]): THREE.Group {
   const g = new THREE.Group();
   g.position.set(...def.pos);
   g.rotation.set(...def.rot);
+  g.scale.setScalar(def.scale);
   const tw = def.tweak;
   if (tw) {
     if (tw.rx) g.rotateX(tw.rx);

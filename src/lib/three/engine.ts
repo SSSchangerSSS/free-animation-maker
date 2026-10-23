@@ -182,7 +182,7 @@ export function weaponModeFor(animId: string, v3 = false): WeaponMode {
   // در تنه؛ اصلاح مفصلی جواب نمی‌دهد ⇒ سیاستاً پشت تا بازنویسی proc per-weapon
   if (src === 'kk') return (KK_HAND_OFF.test(name) || KK_2H_BROKEN.test(name)) ? 'back' : 'hand';
   if (src === 'ual') return /^Sword_/.test(name) ? 'hand' : 'back';
-  if (src === 'proc') return /^(guard|attack|block)$/.test(name) ? 'hand' : 'back';
+  if (src === 'proc') return /^(guard|attack|attack2h|block)$/.test(name) ? 'hand' : 'back';
   return 'back';
 }
 
@@ -683,6 +683,13 @@ export class Engine {
 
   play(id: string, instant = false) {
     if (this.disposed) return;
+    // انتخاب حرکت بر اساس نوع سلاح (مأموریت §۳): درخواست حملهٔ عمومی
+    // با سلاح دو‌دست → کلیپ حملهٔ دو‌دست (دست دوم در بُرد می‌ماند)
+    const isV3Body = !!this.lastConfig && this.lastConfig.body in V3_BODIES;
+    if (id === 'proc:attack' && isV3Body
+      && this.character && 'weapon' in this.character && this.character.weapon?.def.twoHanded) {
+      id = 'proc:attack2h';
+    }
     const next = this.actions[id];
     if (!next || !this.mixer) return;
     // A16 — اطلاعات کلیپ‌های مدل واردی از anims می‌آید (masterClips ندارند)

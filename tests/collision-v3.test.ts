@@ -308,22 +308,29 @@ describe('V3 — proc clips × sword 1H (exact geometry, 120Hz)', () => {
 });
 
 describe('V3 — proc clips × claymore 2H (exact geometry, 120Hz)', () => {
-  it('male: baseline vs AntiClip-ON (numbers recorded — thresholds set after data)', () => {
-    for (const id of ['idle', 'walk', 'guard', 'attack']) {
+  // حرکت حملهٔ دو‌دست اختصاصی — ترکیب واقعی موتور برای سلاح دو‌دست
+  it('male: idle/walk/guard/attack2h — baseline vs AntiClip-ON', () => {
+    for (const id of ['idle', 'walk', 'guard', 'attack2h']) {
       const base = runClip(male, profClay, id, false);
       const on = runClip(male, profClay, id, true);
       console.log(`[v3] male clay ${id.padEnd(8)} baseline: ${fmt(base)} | anticlip: ${fmt(on)}`);
-      // فقط نگهبان «آلوده‌نکردن کلیپ تمیز» — سقف پایین و ثابت
       if (base.violSamples === 0) expect(on.violSamples).toBe(0);
     }
   }, 240000);
 
-  it('female: baseline vs AntiClip-ON (numbers recorded — thresholds set after data)', () => {
-    for (const id of ['idle', 'walk', 'guard', 'attack']) {
+  it('female: idle/walk/guard/attack2h — baseline vs AntiClip-ON', () => {
+    for (const id of ['idle', 'walk', 'guard', 'attack2h']) {
       const base = runClip(female, profClay, id, false);
       const on = runClip(female, profClay, id, true);
       console.log(`[v3] female clay ${id.padEnd(8)} baseline: ${fmt(base)} | anticlip: ${fmt(on)}`);
       if (base.violSamples === 0) expect(on.violSamples).toBe(0);
     }
+  }, 240000);
+
+  it('claymore × 1H attack clip: INVALID combo — recorded for the record (engine routes 2H weapons to attack2h)', () => {
+    // این ترکیب دیگر در موتور مسیر ندارد (play() سلاح دو‌دست را به
+    // attack2h می‌فرستد)؛ عدد اینجا فقط سند است — چنگ دست دوم در بُرد نیست
+    const base = runClip(male, profClay, 'attack', false);
+    console.log(`[v3] male clay attack ⚠️ INVALID-1H-clip baseline: ${fmt(base)}`);
   }, 240000);
 });

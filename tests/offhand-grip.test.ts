@@ -64,7 +64,7 @@ function jointDist(a: THREE.Object3D, b: THREE.Object3D): number {
   return pa.distanceTo(pb);
 }
 
-interface GripSample { reachErr: number; maxCorrDeg: number; stretch: number }
+interface GripSample { reachErr: number; maxCorrDeg: number; stretch: number; shoulderDist: number; handDist: number }
 
 /** اجرای کلیپ با چنگ دو‌دستی فعال — reachErr/corr/stretch در هر نمونه */
 function runGripClip(
@@ -97,6 +97,10 @@ function runGripClip(
   const n = Math.max(2, Math.ceil(clip.duration / dt));
   const targetW = new THREE.Vector3();
   const effW = new THREE.Vector3();
+  const shoulderW = new THREE.Vector3();
+  const handRW = new THREE.Vector3();
+  const shoulder = chainBones[chainBones.length - 1]; // پرکسیمال‌ترین مفصل
+  const handR = male.hand;
   for (let i = 0; i < n; i++) {
     mixer.update(dt);
     male.rig.root.updateMatrixWorld(true);
@@ -109,14 +113,20 @@ function runGripClip(
     male.rig.root.updateMatrixWorld(true);
     gripTarget.updateWorldMatrix(true, false);
     effectorL.updateWorldMatrix(true, false);
+    shoulder.updateWorldMatrix(true, false);
+    handR.updateWorldMatrix(true, false);
     targetW.setFromMatrixPosition(gripTarget.matrixWorld);
     effW.setFromMatrixPosition(effectorL.matrixWorld);
+    shoulderW.setFromMatrixPosition(shoulder.matrixWorld);
+    handRW.setFromMatrixPosition(handR.matrixWorld);
     const su = jointDist(chainBones[1], chainBones[0]) / restUpper;
     const sl = jointDist(chainBones[0], effectorL) / restLower;
     samples.push({
       reachErr: effW.distanceTo(targetW),
       maxCorrDeg: THREE.MathUtils.radToDeg(rep.applied),
       stretch: Math.max(Math.abs(su - 1), Math.abs(sl - 1)),
+      shoulderDist: shoulderW.distanceTo(targetW),
+      handDist: effW.distanceTo(handRW),
     });
   }
   action.stop();
@@ -163,6 +173,29 @@ describe('OffHandGrip — two-handed grip on grip2 (Male_Base × Claymore)', () 
     expect(st.maxStretch).toBeLessThan(0.025);
     // و ثبت عددی بلامانع: خطا باید واقعاً بزرگ‌تر از آستانهٔ قفل باشد
     expect(st.mean).toBeGreaterThan(0.025);
+  }, 240000);
+
+  it('attack2h: dedicated 2H clip keeps left hand on grip2, chain not stretched', () => {
+    const { samples } = runGripClip('attack2h');
+    const st = stats(samples, WARMUP);
+    // آیا هدف از بُرد دست خارج می‌شود؟ (شانه تا grip2 در برابر طول دست)
+    const maxReach = restUpper + restLower;
+    const worstReach = Math.max(...samples.map((s) => s.shoulderDist));
+    const overReach = samples.filter((s) => s.shoulderDist > maxReach).length;
+    console.log(`[grip2] attack2h reachErr mean=${(st.mean * 100).toFixed(1)}cm max=${(st.max * 100).toFixed(1)}cm stretch=${(st.maxStretch * 100).toFixed(2)}% shoulder→grip2 max=${(worstReach * 100).toFixed(1)}cm vs arm ${(maxReach * 100).toFixed(1)}cm overReachFrames=${overReach} handDist max=${(Math.max(...samples.map((s) => s.handDist)) * 100).toFixed(1)}cm`);
+    // تشخیص کلیدفریم — فاصله‌ها در هر کلید (برای تنظیم داده‌محور کلیپ)
+    const dtRun = 1.05 / samples.length;
+    const kf = [0, 0.18, 0.3, 0.4, 0.52, 0.68, 0.86, 1.05];
+    for (const tk of kf) {
+      const si = Math.min(samples.length - 1, Math.round(tk / dtRun));
+      const s = samples[si];
+      console.log(`[grip2]   t=${tk.toFixed(2)} shoulder→grip2=${(s.shoulderDist * 100).toFixed(1)}cm handDist=${(s.handDist * 100).toFixed(1)}cm reach=${(s.reachErr * 100).toFixed(1)}cm`);
+    }
+    // معیار ۱ — رساندن در کل ضربه (کلیپ برای دو‌دست طراحی شده)
+    expect(st.mean).toBeLessThan(0.025);
+    expect(st.max).toBeLessThan(0.05);
+    // معیار ۲ — کشش زنجیره ≤ ۲٫۵٪
+    expect(st.maxStretch).toBeLessThan(0.025);
   }, 240000);
 
   it('attack with AntiClip ON: solvers do not fight (same reach, no stretch)', () => {
