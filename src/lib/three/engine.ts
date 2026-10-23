@@ -424,10 +424,11 @@ export class Engine {
     this.mixer?.update(dt);
     this.character?.update(dt);
     // ضدنفوذ — بعد از انیمیشن/چنگ، قبل از رندر
-    if (this.anticlip && this.character && 'weapon' in this.character && this.character.weapon
-      && this.character.getWeaponMode() === 'hand' && this.kaykitMapping) {
-      const w = this.character.weapon;
-      const handBone = w.def.hand === 'l' ? this.character.handBones.l : this.character.handBones.r;
+    const v3Build = this.character && 'offHandGrip' in this.character ? this.character as V3Build : null;
+    if (this.anticlip && v3Build && v3Build.weapon
+      && v3Build.getWeaponMode() === 'hand' && this.kaykitMapping) {
+      const w = v3Build.weapon;
+      const handBone = w.def.hand === 'l' ? v3Build.handBones.l : v3Build.handBones.r;
       if (handBone) {
         handBone.updateWorldMatrix(true, false);
         // تیغه در فضای محلی دست: ماتریس گروه × نقطه‌ی خام
@@ -441,6 +442,12 @@ export class Engine {
         const to = new THREE.Vector3(...w.def.bladeTo).applyMatrix4(gm);
         this.anticlip.update(handBone, w.group, from, to);
       }
+    }
+    // چنگ دو‌دستی — دست دوم به grip2 (بعد از AntiClip؛ زنجیره‌های مستقل،
+    // وابستگی یک‌طرفه: کلیپ → سلاح → دست دوم — بدون حلقهٔ بازخورد)
+    if (v3Build?.offHandGrip && v3Build.weapon && v3Build.getWeaponMode() === 'hand'
+      && v3Build.weapon.def.twoHanded) {
+      v3Build.offHandGrip.update(dt);
     }
     this.controls.update();
     this.renderer.render(this.scene, this.camera);

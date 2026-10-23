@@ -19,6 +19,7 @@ import {
   type RecolorTarget, type RecolorRule, type RecolorColors, type MaskSet, type RecolorKey,
 } from './recolor';
 import { applyReshape, DEFAULT_PHYSIQUE, type Physique } from './reshape';
+import { OffHandGrip } from './offhand-grip';
 import type { CharConfig } from './types';
 import { assetUrl } from '../base-path';
 import { V3_WEAPONS, type V3WeaponDef } from './weapons3';
@@ -163,6 +164,8 @@ export interface V3Build {
   handBones: { l: THREE.Bone | null; r: THREE.Bone | null };
   chestBone: THREE.Bone | null;
   weapon: V3WeaponHandle | null;
+  /** چنگ دو‌دستی — فقط برای سلاح‌های twoHanded با grip2 تعریف‌شده */
+  offHandGrip: OffHandGrip | null;
   /** دست/پشت کردن سلاح */
   setWeaponMode: (mode: 'hand' | 'back') => void;
   getWeaponMode: () => 'hand' | 'back';
@@ -307,6 +310,7 @@ export async function buildV3Character(cfg: CharConfig): Promise<V3Build> {
   const chestBone = boneMap.get('spine_03') ?? boneMap.get('spine_02') ?? null;
   let weaponMode: 'hand' | 'back' = 'hand';
   let weapon: V3WeaponHandle | null = null;
+  let offHandGrip: OffHandGrip | null = null;
   let backWeapon: THREE.Group | null = null;
   const weaponId = def.weapons.includes(cfg.weapon) ? cfg.weapon : def.defaultWeapon;
 
@@ -330,6 +334,24 @@ export async function buildV3Character(cfg: CharConfig): Promise<V3Build> {
     const hand = wdef.hand === 'l' ? handBones.l : handBones.r;
     if (hand) hand.add(group);
     weapon = { def: wdef, group };
+    // ── چنگ دو‌دستی: نقطهٔ grip2 فرزند گروه سلاح است و دست دوم با
+    // OffHandGrip به آن قفل می‌شود (مأموریت §۲ — بعد از AntiClip در حلقه)
+    if (wdef.twoHanded && wdef.grip2 && handBones.l) {
+      const grip2Target = new THREE.Object3D();
+      grip2Target.name = '__grip2__';
+      grip2Target.position.set(...wdef.grip2);
+      group.add(grip2Target);
+      const chain: THREE.Bone[] = [];
+      for (const key of ['lowerArmL', 'upperArmL'] as const) {
+        const b = boneMap.get(key === 'lowerArmL' ? 'lowerarm_l' : 'upperarm_l') ?? null;
+        if (b) chain.push(b);
+      }
+      const clav = boneMap.get('clavicle_l') ?? null;
+      if (clav) chain.push(clav);
+      if (chain.length >= 2) {
+        offHandGrip = new OffHandGrip({ chain, effector: handBones.l, target: grip2Target });
+      }
+    }
     // نسخه‌ی پشت کمر
     if (chestBone) {
       backWeapon = group.clone(true);
@@ -394,6 +416,7 @@ export async function buildV3Character(cfg: CharConfig): Promise<V3Build> {
 
   return {
     root, def, physique: phys, handBones, chestBone, weapon,
+    offHandGrip,
     animations: [],
     setWeaponMode: (mode) => {
       weaponMode = mode;
