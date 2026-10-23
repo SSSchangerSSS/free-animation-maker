@@ -1,6 +1,7 @@
 'use client';
 
 import dynamic from 'next/dynamic';
+import ErrorBoundary from '@/components/error-boundary';
 
 const Creator = dynamic(() => import('@/components/creator'), {
   ssr: false,
@@ -13,5 +14,9 @@ const Creator = dynamic(() => import('@/components/creator'), {
 });
 
 export default function Home() {
-  return <Creator />;
+  return (
+    <ErrorBoundary>
+      <Creator />
+    </ErrorBoundary>
+  );
 }

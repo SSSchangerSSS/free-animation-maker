@@ -10,7 +10,7 @@ import {
   User, Leaf, Axe, Hammer, Skull, Dices, Upload, Download, Camera, RotateCw, RotateCcw,
   PersonStanding, Footprints, Zap, Swords, Sword, Hand, Music, ChevronUp, ChevronDown,
   Wand2, Save, FolderOpen, Loader2, Bone, CheckCircle2, AlertTriangle, FileUp,
-  Shield, Flame, PartyPopper, ShieldCheck, Search, Video,
+  Flame, PartyPopper, ShieldCheck, Search, Video,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
@@ -22,13 +22,19 @@ import {
 import { cn } from '@/lib/utils';
 import { Engine, type EngineAnimInfo, type AnimCat } from '@/lib/three/engine';
 import { BODIES } from '@/lib/character/kaykit';
+import { TARGET_HEIGHT } from '@/lib/character';
+import { assetUrl } from '@/lib/base-path';
 import {
   RACES, SKIN_PALETTES, HAIR_COLORS, CLOTH_COLORS, METAL_COLORS,
   HAIR_STYLES, BEARD_STYLES, HERO_PRESETS, defaultConfig, randomName, rebaseConfigForRace,
-  PHYSIQUE_SLIDERS,
+  PHYSIQUE_SLIDERS, validatePreset,
   type CharConfig, type RaceId,
 } from '@/lib/character/types';
 import { DEFAULT_PHYSIQUE, RACE_PHYSIQUE } from '@/lib/character/reshape';
+
+// A27 — سقف حجم ورودی مدل
+const MAX_IMPORT_BYTES = 100 * 1024 * 1024;
+const MAX_RESOURCE_FILES = 64;
 
 // ── آیکون‌ها ─────────────────────────────────────────────────
 const RACE_ICONS: Record<RaceId, React.ComponentType<{ className?: string }>> = {
@@ -117,6 +123,7 @@ function ToggleRow({ label, value, onChange, hint }: {
     <button
       type="button"
       onClick={() => onChange(!value)}
+      aria-pressed={value}
       className={cn(
         'flex w-full items-center justify-between rounded-md border px-3 py-2 text-xs transition-colors',
         value ? 'border-[#c8a24a] bg-[#c8a24a]/10 text-[#e8c97a]' : 'border-[#c8a24a]/20 bg-black/20 text-[#b8ad98] hover:border-[#c8a24a]/50',
@@ -137,10 +144,11 @@ function SliderRow({ label, value, min, max, step, onChange, format }: {
   return (
     <div className="mb-3">
       <div className="mb-1.5 flex items-center justify-between text-xs">
-        <span className="text-[#b8ad98]">{label}</span>
+        <span className="text-[#b8ad98]" id={`slider-label-${label}`}>{label}</span>
         <span className="font-medium text-[#e8c97a]">{format ? format(value) : value.toFixed(2)}</span>
       </div>
-      <Slider value={[value]} min={min} max={max} step={step} onValueChange={(v) => onChange(v[0])} />
+      <Slider value={[value]} min={min} max={max} step={step} onValueChange={(v) => onChange(v[0])}
+        aria-label={label} aria-labelledby={`slider-label-${label}`} />
     </div>
   );
 }
@@ -292,7 +300,8 @@ function CustomizationPanel({ cfg, set }: {
           <TabsContent value="body" className="mt-0">
             <SectionTitle>قد و تنومندی</SectionTitle>
             <SliderRow label="قد" value={cfg.height} min={0.62} max={1.12} step={0.01}
-              onChange={(v) => set({ height: v })} format={(v) => `${Math.round(v * 178)} سانتی‌متر`} />
+              onChange={(v) => set({ height: v })}
+              format={(v) => `${Math.round((TARGET_HEIGHT[cfg.body] ?? 1.78) * v * 100)} سانتی‌متر`} />
             <SliderRow label="تنومندی" value={cfg.bulk} min={0.85} max={1.25} step={0.01}
               onChange={(v) => set({ bulk: v })} format={(v) => `${Math.round(v * 100)}٪`} />
 
@@ -360,7 +369,7 @@ function CustomizationPanel({ cfg, set }: {
 
 // ── گزارش import ─────────────────────────────────────────────
 function ReportCard({ report }: {
-  report: { found: string[]; missing: string[]; boneCount: number; modelClips: number; ok: boolean };
+  report: { found: string[]; missing: string[]; boneCount: number; modelClips: number; libraryClips: number; failed: number; ok: boolean };
 }) {
   return (
     <div className="space-y-2 rounded-lg border border-[#c8a24a]/25 bg-black/25 p-3 text-xs">
@@ -373,8 +382,15 @@ function ReportCard({ report }: {
         <Bone className="h-3.5 w-3.5 text-[#c8a24a]" />
         {report.boneCount} استخوان — {report.found.length} قطعه‌ی بدن نگاشت شد
       </div>
-      {report.modelClips > 0 && (
-        <div className="text-[#8a8070]">{report.modelClips} انیمیشن همراه مدل هم اضافه شد</div>
+      {/* A16 — گزارش دقیق نتیجه‌ی انتقال و استخوان‌های مفقود */}
+      <div className="text-[#8a8070]">
+        {report.libraryClips} انیمیشن کتابخانه + {report.modelClips} انیمیشن همراه مدل
+        {report.failed > 0 && <span className="text-amber-400"> — {report.failed} مورد ناموفق</span>}
+      </div>
+      {report.missing.length > 0 && (
+        <div className="text-[11px] leading-4 text-amber-400/90">
+          قطعه‌های نگاشت‌نشده: <span dir="ltr" className="inline-block">{report.missing.join(', ')}</span>
+        </div>
       )}
       <p className="leading-5 text-[#6b6252]">
         بهترین نتیجه: GLB با پوز T و اسکلت Mixamo/Blender — رو به +Z
@@ -402,14 +418,24 @@ export default function Creator() {
   const [libOpen, setLibOpen] = useState(false);
   const [libQuery, setLibQuery] = useState('');
   const [libCat, setLibCat] = useState<AnimCat | 'all' | 'model'>('all');
+  const [glError, setGlError] = useState<string | null>(null); // A28
+  const [exporting, setExporting] = useState(false); // A18
   const presetInputRef = useRef<HTMLInputElement>(null);
 
   // ── init engine ──
   useEffect(() => {
     if (!mountRef.current) return;
-    const engine = new Engine(mountRef.current);
+    let engine: Engine;
+    try {
+      engine = new Engine(mountRef.current); // A28 — خطای WebGL با پیام قابل فهم
+    } catch (e) {
+      console.error('WebGL init failed', e);
+      setGlError('راه‌اندازی WebGL ناموفق بود — مرورگر یا درایور گرافیکی شما از WebGL پشتیبانی نمی‌کند.');
+      return;
+    }
     engineRef.current = engine;
     engine.onLoadingChange = (v) => setLoading(v);
+    engine.onAnimChange = (id) => setActiveAnim(id); // A11 — همگام‌سازی UI از موتور
     engine.onImportedChange = (v) => {
       setIsImported(v);
       if (!v) setActiveAnim('kk:Idle');
@@ -431,9 +457,15 @@ export default function Creator() {
     const h = setTimeout(() => { void engineRef.current?.setCharacter(config); }, 120);
     return () => clearTimeout(h);
   }, [config]);
-  useEffect(() => { engineRef.current?.play(activeAnim); }, [activeAnim]);
+  // A11 — پخش با کلیک مستقیم اجرا می‌شود (تکرار همان one-shot هم کار می‌کند)
+  // و اثر activeAnim→play حذف شد تا پخش دوباره رخ ندهد
   useEffect(() => { engineRef.current?.setSpeed(speed); }, [speed]);
   useEffect(() => { engineRef.current?.setAutoRotate(autoRotate); }, [autoRotate]);
+
+  const playAnim = useCallback((id: string) => {
+    engineRef.current?.play(id); // reset+play در موتور — تکرار یک‌سان ممکن است
+    setActiveAnim(id);
+  }, []);
 
   const set = useCallback((patch: Partial<CharConfig>) => {
     setConfig((c) => ({ ...c, ...patch }));
@@ -468,6 +500,8 @@ export default function Creator() {
   }, []);
 
   const doExport = useCallback(async () => {
+    if (exporting) return;
+    setExporting(true); // A18 — حین آماده‌سازی خروجی، عملیات ناسازگار قفل می‌شوند
     try {
       toast('در حال ساخت خروجی…');
       const blob = await engineRef.current!.exportGLB();
@@ -480,8 +514,10 @@ export default function Creator() {
       toast.success('خروجی GLB دانلود شد — کتابخانه‌ی انیمیشن داخلش است');
     } catch {
       toast.error('خروجی گرفتن ناموفق بود');
+    } finally {
+      setExporting(false);
     }
-  }, [config.name]);
+  }, [config.name, exporting]);
 
   const doScreenshot = useCallback(() => {
     const url = engineRef.current!.screenshot();
@@ -503,39 +539,79 @@ export default function Creator() {
     toast.success('پریست ذخیره شد');
   }, [config]);
 
+  // A07 — اعتبارسنجی کامل پریست با schema؛ پریست نامعتبر state را خراب نمی‌کند
   const loadPreset = useCallback(async (file: File) => {
     try {
-      const data = JSON.parse(await file.text());
-      if (data?.config?.race && RACES[data.config.race as RaceId]) {
-        const c = data.config as CharConfig;
-        if (!BODIES[c.body]) c.body = RACES[c.race].defaultBody;
-        setConfig({ ...defaultConfig(c.race), ...c });
+      const data: unknown = JSON.parse(await file.text());
+      const cfg = validatePreset(data);
+      if (cfg) {
+        setConfig(cfg);
         toast.success('پریست بارگذاری شد');
       } else {
-        toast.error('فایل پریست معتبر نیست');
+        toast.error('فایل پریست معتبر نیست — ساختار یا مقادیر خارج از بازه است');
       }
     } catch {
       toast.error('فایل پریست خوانده نشد');
     }
   }, []);
 
-  const onImportFile = useCallback(async (file: File) => {
+  // A13/A27 — ورود چندفایلی: GLB تنها، یا .gltf همراه .bin و بافت‌ها؛
+  // سقف حجم + پیام خطای دقیق برای منابع خارجی و فایل بزرگ
+  const onImportFiles = useCallback(async (fileList: FileList | null) => {
+    if (!fileList || fileList.length === 0) return;
+    const files = Array.from(fileList);
+    if (files.length > MAX_RESOURCE_FILES) {
+      toast.error(`حداکثر ${MAX_RESOURCE_FILES} فایل همزمان پذیرفته می‌شود`);
+      return;
+    }
+    const total = files.reduce((s, f) => s + f.size, 0);
+    if (total > MAX_IMPORT_BYTES) {
+      toast.error(`حجم ورودی بیش از ${Math.round(MAX_IMPORT_BYTES / 1024 / 1024)}MB است`);
+      return;
+    }
+    const main = files.find((f) => f.name.toLowerCase().endsWith('.glb'))
+      ?? files.find((f) => f.name.toLowerCase().endsWith('.gltf'));
+    if (!main) {
+      toast.error('هیچ فایل GLB/GLTF اصلی پیدا نشد');
+      return;
+    }
     setImporting(true);
     setImportProgress('خواندن مدل…');
+    const resourceUrls: string[] = [];
     try {
-      const buf = await file.arrayBuffer();
-      const rep = await engineRef.current!.importGLB(buf, (done, total) => {
-        setImportProgress(`ریتارگت انیمیشن‌ها… ${done}/${total}`);
+      const resourceFiles = new Map<string, string>();
+      for (const f of files) {
+        if (f === main) continue;
+        const url = URL.createObjectURL(f);
+        resourceUrls.push(url);
+        resourceFiles.set(f.name.toLowerCase(), url);
+      }
+      const buf = await main.arrayBuffer();
+      const rep = await engineRef.current!.importGLB(buf, resourceFiles, (done, totalClips) => {
+        setImportProgress(`ریتارگت انیمیشن‌ها… ${done}/${totalClips}`);
       });
       setReport(rep);
       setAnims(engineRef.current!.getAnimList());
-      toast.success(`مدل وارد شد و ${Math.min(anims.length, 150)} انیمیشن رویش ریخته شد!`);
-    } catch {
-      toast.error('فایل GLB خوانده نشد');
+      // A16 — تعداد از نتیجه‌ی واقعی import می‌آید، نه state قدیمی
+      const applied = rep.libraryClips + rep.modelClips;
+      toast.success(`مدل وارد شد — ${applied} انیمیشن رویش ریخته شد${rep.failed > 0 ? ` (${rep.failed} ناموفق)` : ''}`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : '';
+      if (msg === 'IMPORT_STALE') {
+        // import تازه‌تر جای این را گرفت — بی‌صدا
+      } else if (msg === 'MODEL_TOO_LARGE') {
+        toast.error('فایل مدل بیش از حد مجاز بزرگ است');
+      } else if (msg === 'EXTERNAL_RESOURCE') {
+        toast.error('مدل به منبع خارجی (CDN) اشاره می‌کند — منابع را کنار فایل همراه بیاورید');
+      } else {
+        toast.error('فایل GLB خوانده نشد — فرمت یا ساختار مدل پشتیبانی نمی‌شود');
+      }
+    } finally {
+      for (const u of resourceUrls) URL.revokeObjectURL(u);
+      setImporting(false);
+      setImportProgress('');
     }
-    setImporting(false);
-    setImportProgress('');
-  }, [anims.length]);
+  }, []);
 
   const backToCreator = useCallback(() => {
     engineRef.current?.exitImported();
@@ -603,7 +679,12 @@ export default function Creator() {
           <Button size="sm" className="mx-1 hidden text-xs md:inline-flex" onClick={() => setImportOpen(true)}>
             <FileUp className="ml-1 h-4 w-4" /> ورود مدل GLB
           </Button>
-          <Button size="sm" variant="outline" className="border-[#c8a24a]/40 text-xs" onClick={doExport}>
+          {/* A15 — مسیر ورود مدل در موبایل هم در دسترس است */}
+          <Button size="icon" variant="ghost" className="h-9 w-9 md:hidden" onClick={() => setImportOpen(true)}
+            title="ورود مدل GLB" aria-label="ورود مدل GLB">
+            <FileUp className="h-4 w-4" />
+          </Button>
+          <Button size="sm" variant="outline" className="border-[#c8a24a]/40 text-xs" onClick={doExport} disabled={exporting}>
             <Download className="ml-1 h-4 w-4" /> <span className="hidden sm:inline">خروجی GLB</span>
           </Button>
         </div>
@@ -620,6 +701,17 @@ export default function Creator() {
           <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 bg-[#0f0c08]/70 backdrop-blur-sm">
             <Loader2 className="h-9 w-9 animate-spin text-[#c8a24a]" />
             <span className="text-sm text-[#c8a24a]">در حال آماده‌سازی قهرمان…</span>
+          </div>
+        )}
+
+        {/* A28 — خطای WebGL با مسیر بازیابی */}
+        {glError && (
+          <div className="absolute inset-0 z-40 flex flex-col items-center justify-center gap-4 bg-[#0f0c08]/90 p-6 text-center">
+            <AlertTriangle className="h-10 w-10 text-amber-500" />
+            <p className="max-w-md text-sm leading-6 text-[#e8ddc8]">{glError}</p>
+            <Button variant="outline" className="border-[#c8a24a]/40" onClick={() => window.location.reload()}>
+              <RotateCcw className="ml-1 h-4 w-4" /> تلاش مجدد
+            </Button>
           </div>
         )}
 
@@ -694,7 +786,8 @@ export default function Creator() {
                   <button
                     key={a.id}
                     type="button"
-                    onClick={() => setActiveAnim(a.id)}
+                    onClick={() => playAnim(a.id)}
+                    aria-pressed={activeAnim === a.id}
                     className={cn(
                       'flex items-center justify-between gap-1 rounded-md border px-2 py-1.5 text-right text-[11px] transition-colors',
                       activeAnim === a.id
@@ -732,7 +825,8 @@ export default function Creator() {
                 <button
                   key={a.id}
                   type="button"
-                  onClick={() => setActiveAnim(a.id)}
+                  onClick={() => playAnim(a.id)}
+                  aria-pressed={activeAnim === a.id}
                   title={a.label}
                   className={cn(
                     'flex shrink-0 flex-col items-center gap-0.5 rounded-lg border px-2.5 py-1.5 transition-colors',
@@ -785,24 +879,24 @@ export default function Creator() {
             <div className="rounded-lg border border-[#c8a24a]/20 bg-black/25 p-3">
               <p className="mb-1 font-bold text-[#c8a24a]">استاندارد پذیرفته‌شده:</p>
               <ul className="list-inside list-disc space-y-0.5">
-                <li>فرمت GLB یا GLTF با SkinnedMesh</li>
+                <li>فرمت GLB خودبسنده، یا GLTF همراه فایل‌های ‎.bin و بافت — همه را همزمان انتخاب کنید</li>
                 <li>پوز مرجع T-Pose (پوز A هم خودکار اصلاح می‌شود)</li>
                 <li>اسکلت Mixamo / Blender / Unity — تشخیص خودکار نام استخوان‌ها</li>
-                <li>رو به جهت +Z</li>
+                <li>حداکثر حجم ۱۰۰ مگابایت؛ منابع خارجی (CDN) پذیرفته نمی‌شوند</li>
               </ul>
             </div>
 
             <label className="flex h-20 cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-[#c8a24a]/40 bg-black/20 transition-colors hover:border-[#c8a24a] hover:bg-[#c8a24a]/5">
               {importing
                 ? <><Loader2 className="h-5 w-5 animate-spin text-[#c8a24a]" /> {importProgress || 'در حال ریتارگت…'}</>
-                : <><FileUp className="h-5 w-5 text-[#c8a24a]" /> فایل GLB را انتخاب کنید</>}
-              <input type="file" accept=".glb,.gltf" className="hidden" disabled={importing}
-                onChange={(e) => e.target.files?.[0] && onImportFile(e.target.files[0])} />
+                : <><FileUp className="h-5 w-5 text-[#c8a24a]" /> فایل GLB/GLTF را انتخاب کنید (چندفایلی مجاز)</>}
+              <input type="file" accept=".glb,.gltf,.bin,.png,.jpg,.jpeg,.webp" multiple className="hidden" disabled={importing}
+                onChange={(e) => { void onImportFiles(e.target.files); e.target.value = ''; }} />
             </label>
 
             <p className="text-[11px] text-[#6b6252]">
               مدلی ندارید؟{' '}
-              <a href="sample-model.glb" download="sample-model.glb"
+              <a href={assetUrl('/sample-model.glb')} download="sample-model.glb"
                 className="text-[#c8a24a] underline decoration-dotted hover:text-[#e8c97a]">
                 مدل نمونه استاندارد را دانلود کنید
               </a>{' '}

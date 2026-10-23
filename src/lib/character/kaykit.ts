@@ -5,6 +5,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import type { RecolorRule } from './recolor';
+import { assetUrl } from '../base-path';
 
 export type BodyId =
   | 'Rogue' | 'Knight' | 'Barbarian' | 'Mage' | 'Rogue_Hooded'
@@ -29,6 +30,8 @@ export interface BodyDef {
   rules: {
     skin: RecolorRule[];
     hair: RecolorRule[];
+    /** A12 — قواعد مستقل ریشِ baked (وقتی بدنه ریشِ تفکیک‌پذیر دارد) */
+    beard?: RecolorRule[];
     cloth: RecolorRule[];
     metal?: RecolorRule[];
     bone?: RecolorRule[];
@@ -40,7 +43,6 @@ const skinRange = (light: [number, number] = [0.55, 0.9]): RecolorRule['range'] 
   ({ hue: [12, 38], sat: [0.1, 0.9], light });
 
 const SKIN_ALL_PARTS = ['armleft', 'armright', 'body', 'head', 'legleft', 'legright'];
-const SKIN_HEAD_ONLY = ['head'];
 const SKIN_ARMS = ['armleft', 'armright'];
 
 // ── قواعد مشترک مهاجران ─────────────────────────────────────
@@ -54,13 +56,6 @@ const ADVENTURER_SKIN: RecolorRule[] = [
 const ADVENTURER_HAIR: Record<string, RecolorRule[]> = {
   // نایت: موی بلوند زیر خود (فقط وقتی خود خاموش است دیده می‌شود)
   Knight: [{ parts: ['head'], range: { hue: [35, 58], sat: [0.25, 0.85], light: [0.45, 0.9] }, meanL: 0.68 }],
-  // بربر: ریش/ابروی خاکستری
-  Barbarian: [{ parts: ['head'], range: { hue: [0, 360], sat: [0, 0.16], light: [0.38, 0.72] }, meanL: 0.55 }],
-  // جادومند: موی مشکی + ریش نارنجی
-  Mage: [
-    { parts: ['head'], range: { hue: [10, 40], sat: [0.5, 1], light: [0.2, 0.6] }, meanL: 0.4 },
-    { parts: ['head'], range: { hue: [0, 360], sat: [0, 0.18], light: [0.08, 0.3] }, meanL: 0.18 },
-  ],
   // راهزن: دستمال نارنجی + موی سبز
   Rogue: [
     { parts: ['head'], range: { hue: [12, 32], sat: [0.6, 1], light: [0.35, 0.7] }, meanL: 0.52 },
@@ -70,6 +65,14 @@ const ADVENTURER_HAIR: Record<string, RecolorRule[]> = {
     { parts: ['head'], range: { hue: [12, 32], sat: [0.6, 1], light: [0.35, 0.7] }, meanL: 0.52 },
     { parts: ['head'], range: { hue: [95, 150], sat: [0.25, 0.8], light: [0.35, 0.8] }, meanL: 0.6 },
   ],
+};
+
+// A12 — قواعد مستقل ریشِ baked؛ دیگر با اسلات مو قاطی نمی‌شوند
+const ADVENTURER_BEARD: Record<string, RecolorRule[]> = {
+  // بربر: ریش/ابروی خاکستری
+  Barbarian: [{ parts: ['head'], range: { hue: [0, 360], sat: [0, 0.16], light: [0.38, 0.72] }, meanL: 0.55 }],
+  // جادومند: ریش نارنجی (موی مشکی در اسلات مو می‌ماند)
+  Mage: [{ parts: ['head'], range: { hue: [10, 40], sat: [0.5, 1], light: [0.2, 0.6] }, meanL: 0.4 }],
 };
 
 const ADVENTURER_CLOTH: Record<string, RecolorRule[]> = {
@@ -157,7 +160,7 @@ export const BODIES: Record<BodyId, BodyDef> = {
     helmet: { id: 'helmet', label: 'کلاه خز', nodes: ['Barbarian_Hat'] },
     cape: { id: 'cape', label: 'شنل', nodes: ['Barbarian_Cape'] },
     hairErasable: false, beardErasable: true,
-    rules: { skin: ADVENTURER_SKIN, hair: ADVENTURER_HAIR.Barbarian, cloth: ADVENTURER_CLOTH.Barbarian },
+    rules: { skin: ADVENTURER_SKIN, hair: [], beard: ADVENTURER_BEARD.Barbarian, cloth: ADVENTURER_CLOTH.Barbarian },
   },
   Mage: {
     id: 'Mage', label: 'جادومند', desc: 'ردای بنفش و کلاه نوک‌تیز', file: 'Mage.glb', family: 'adventurer',
@@ -171,7 +174,10 @@ export const BODIES: Record<BodyId, BodyDef> = {
     helmet: { id: 'helmet', label: 'کلاه جادو', nodes: ['Mage_Hat'] },
     cape: { id: 'cape', label: 'شنل', nodes: ['Mage_Cape'] },
     hairErasable: true, beardErasable: true,
-    rules: { skin: ADVENTURER_SKIN, hair: ADVENTURER_HAIR.Mage, cloth: ADVENTURER_CLOTH.Mage },
+    rules: {
+      skin: ADVENTURER_SKIN, hair: [{ parts: ['head'], range: { hue: [0, 360], sat: [0, 0.18], light: [0.08, 0.3] }, meanL: 0.18 }],
+      beard: ADVENTURER_BEARD.Mage, cloth: ADVENTURER_CLOTH.Mage,
+    },
   },
   Rogue_Hooded: {
     id: 'Rogue_Hooded', label: 'سایه‌روان', desc: 'کلاه‌برداری مرموز با شنل', file: 'Rogue_Hooded.glb', family: 'adventurer',
@@ -215,9 +221,18 @@ export interface LoadedBody {
 
 const cache = new Map<BodyId, Promise<LoadedBody>>();
 
+/**
+ * A20 — هندسه‌های اشتراکی کش body ها؛ dispose شخصیت نباید این‌ها را
+ * آزاد کند چون SkeletonUtils.clone هندسه را با pristine به اشتراک می‌گذارد.
+ */
+export const sharedGeometries = new WeakSet<THREE.BufferGeometry>();
+
+export function isSharedGeometry(g: THREE.BufferGeometry): boolean {
+  return sharedGeometries.has(g);
+}
+
 function modelUrl(file: string): string {
-  const base = process.env.NEXT_PUBLIC_BASE_PATH ?? '';
-  return `${base}/models/${file}`;
+  return assetUrl(`/models/${file}`);
 }
 
 export function loadBody(id: BodyId): Promise<LoadedBody> {
@@ -233,12 +248,21 @@ export function loadBody(id: BodyId): Promise<LoadedBody> {
         root.updateMatrixWorld(true);
         const box = new THREE.Box3().setFromObject(root);
         const height = Math.max(0.01, box.max.y - box.min.y);
+        // A20 — همه‌ی هندسه‌های این بدنه به‌عنوان اشتراکی ثبت می‌شوند
+        root.traverse((o) => {
+          const m = o as THREE.Mesh;
+          if (m.geometry) sharedGeometries.add(m.geometry);
+        });
         // انیمیشن‌های مفید: T-Pose و _Pose ها را نگه نمی‌داریم
         const animations = (gltf.animations ?? []).filter((a) => !/_Pose$|^T-Pose$/.test(a.name));
         resolve({ def, pristine: root, animations, height });
       },
       undefined,
-      (err) => reject(err),
+      (err) => {
+        // A17 — خرابی موقت نباید در کش ماندگار شود؛ تلاش مجدد ممکن بماند
+        if (cache.get(id) === p) cache.delete(id);
+        reject(err);
+      },
     );
   });
   cache.set(id, p);

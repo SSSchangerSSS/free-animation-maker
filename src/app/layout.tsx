@@ -1,7 +1,8 @@
 import type { Metadata, Viewport } from "next";
 import localFont from "next/font/local";
 import "./globals.css";
-import { Toaster } from "@/components/ui/toaster";
+// A10 — فراخوانی‌های toast در Creator از sonner هستند؛ Toaster همان سیستم نصب می‌شود
+import { Toaster } from "@/components/ui/sonner";
 
 const vazirmatn = localFont({
   src: [
@@ -27,7 +28,7 @@ export const viewport: Viewport = {
   themeColor: "#0f0c08",
   width: "device-width",
   initialScale: 1,
-  maximumScale: 1,
+  // A28 — محدودیت zoom حذف شد تا بزرگ‌نمایی مرورگر کار کند
 };
 
 export default function RootLayout({
@@ -39,7 +40,7 @@ export default function RootLayout({
     <html lang="fa" dir="rtl" suppressHydrationWarning>
       <body className={`${vazirmatn.variable} ${vazirmatn.className} antialiased bg-[#0f0c08] text-[#e8ddc8]`}>
         {children}
-        <Toaster />
+        <Toaster position="top-center" richColors closeButton />
       </body>
     </html>
   );

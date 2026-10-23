@@ -27,6 +27,8 @@ export interface HeadFrame {
 
 export interface FeatureMats {
   hair: THREE.MeshStandardMaterial;
+  /** متریال مستقل ریش — رنگ ریش دیگر روی مو اثر نمی‌گذارد (A12) */
+  beard: THREE.MeshStandardMaterial;
   skin: THREE.MeshStandardMaterial;
   ivory: THREE.MeshStandardMaterial;
 }
@@ -180,11 +182,16 @@ export function buildTusks(frame: HeadFrame, mat: THREE.Material): THREE.Group {
  * قاب سر را از «رئوس تغییرشکل‌یافته» (skinning واقعی) می‌سازد.
  * bbox معمولی SkinnedMesh پوز bind است و با reshape/انیمیشن هماهنگ
  * نمی‌شود — این نسخه هر رأس را با ماتریس استخوان‌هایش به جهان می‌برد
- * و بعد به فضای محلی استخوان head برمی‌گرداند؛ نتیجه با سرِ رندرشده
- * دقیقاً یکی است.
+ * و سپس مستقیماً به فضای محلی استخوان head برمی‌گرداند.
+ *
+ * ⚠️ A08 — کل قاب (اندازه، مرکز، کف، جلو) در «فضای محلی headBone»
+ * محاسبه می‌شود، نه اندازه جهانی + مصرف محلی؛ با تغییر height/bulk/head
+ * نسبت اجزا به سر ثابت می‌ماند و مقیاس/چرخش استخوان دوباره اعمال نمی‌شود.
  */
 export function measureHeadFrameSkinned(meshes: THREE.Object3D[], headBone: THREE.Object3D): HeadFrame {
   headBone.updateMatrixWorld(true);
+  // ماتریس تبدیل جهان → محلی headBone (یک‌بار، قبل از پیمایش رئوس)
+  const inv = new THREE.Matrix4().copy(headBone.matrixWorld).invert();
   const box = new THREE.Box3();
   let first = true;
   const v = new THREE.Vector3();
@@ -200,9 +207,10 @@ export function measureHeadFrameSkinned(meshes: THREE.Object3D[], headBone: THRE
     const si = geo.attributes.skinIndex;
     const sw = geo.attributes.skinWeight;
     if (!si || !sw) {
-      // بدون skin — مثل مش معمولی
+      // بدون skin — مثل مش معمولی: باکس جهانی → فضای محلی headBone
       mesh.updateMatrixWorld(true);
       tmpBox.setFromObject(mesh);
+      tmpBox.applyMatrix4(inv);
       if (first) { box.copy(tmpBox); first = false; } else box.union(tmpBox);
       continue;
     }
@@ -231,13 +239,15 @@ export function measureHeadFrameSkinned(meshes: THREE.Object3D[], headBone: THRE
       v.applyMatrix4(skinMat);
       v.applyMatrix4((mesh as THREE.SkinnedMesh).bindMatrixInverse);
       v.applyMatrix4(meshWorld);
+      // A08 — مستقیم به فضای محلی headBone و ساخت باکس همان‌جا
+      v.applyMatrix4(inv);
       box.expandByPoint(v);
     }
     first = false;
   }
   if (first) return fallbackFrame(headBone);
 
-  // حذف گردن: ۳۰٪ پایین باکس کنار گذاشته می‌شود
+  // حذف گردن: ۳۰٪ پایین باکس کنار گذاشته می‌شود — در فضای محلی سر
   const minY = box.min.y + (box.max.y - box.min.y) * 0.3;
   const trimmed = new THREE.Box3(
     new THREE.Vector3(box.min.x, minY, box.min.z),
@@ -245,15 +255,11 @@ export function measureHeadFrameSkinned(meshes: THREE.Object3D[], headBone: THRE
   );
   const size = new THREE.Vector3();
   trimmed.getSize(size);
-  const centerWorld = new THREE.Vector3();
-  trimmed.getCenter(centerWorld);
-  const inv = new THREE.Matrix4().copy(headBone.matrixWorld).invert();
-  const centerLocal = centerWorld.applyMatrix4(inv);
-  const minLocal = trimmed.min.clone().applyMatrix4(inv);
-  const maxLocal = trimmed.max.clone().applyMatrix4(inv);
+  const centerLocal = new THREE.Vector3();
+  trimmed.getCenter(centerLocal);
   return {
     bone: headBone, size, center: centerLocal,
-    bottomY: minLocal.y, frontZ: maxLocal.z,
+    bottomY: trimmed.min.y, frontZ: trimmed.max.z,
   };
 }
 

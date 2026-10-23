@@ -1,18 +1,17 @@
 import type { NextConfig } from "next";
+// A24 — یک منبع واحد برای مسیر پایه (همین مقدار در URL مدل‌ها هم استفاده می‌شود)
+import { BASE_PATH } from "./src/lib/base-path";
 
 // BUILD_MODE=static → خروجی GitHub Pages (پوشه out/)
 const isStatic = process.env.BUILD_MODE === "static";
-const REPO = "free-animation-maker";
 
 const nextConfig: NextConfig = {
   output: isStatic ? "export" : "standalone",
-  basePath: isStatic ? `/${REPO}` : undefined,
-  assetPrefix: isStatic ? `/${REPO}/` : undefined,
+  basePath: isStatic ? BASE_PATH : undefined,
+  assetPrefix: isStatic ? `${BASE_PATH}/` : undefined,
   images: { unoptimized: true },
-  typescript: {
-    ignoreBuildErrors: true,
-  },
-  reactStrictMode: false,
+  // A25 — کنترل کیفیت ساخت دوباره فعال شد
+  reactStrictMode: true,
 };
 
 export default nextConfig;

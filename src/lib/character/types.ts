@@ -3,6 +3,7 @@
 // نژاد = ویژگی‌های نژادی + بدنه‌های مجاز — بدنه = مدل KayKit
 // ─────────────────────────────────────────────────────────────
 import type { BodyId } from './kaykit';
+import { BODIES } from './kaykit';
 import type { HairStyleId, BeardStyleId } from './featuresKaykit';
 import type { Physique } from './reshape';
 import { RACE_PHYSIQUE, DEFAULT_PHYSIQUE } from './reshape';
@@ -169,14 +170,14 @@ export function defaultConfig(race: RaceId = 'human', name?: string): CharConfig
   };
 }
 
-/** اسلایدرهای اندام + برچسب فارسی */
+/** اسلایدرهای اندام + برچسب فارسی — A22: بازه‌ها با clamp موتور هم‌ترازند */
 export const PHYSIQUE_SLIDERS: { key: keyof Physique; label: string; min: number; max: number }[] = [
   { key: 'leg', label: 'طول پا', min: 0.85, max: 1.3 },
   { key: 'arm', label: 'طول بازو', min: 0.85, max: 1.3 },
   { key: 'torso', label: 'طول تنه', min: 0.88, max: 1.22 },
   { key: 'shoulder', label: 'پهنای شانه', min: 0.85, max: 1.3 },
   { key: 'head', label: 'اندازه سر', min: 0.75, max: 1.15 },
-  { key: 'muscle', label: 'عضله', min: 0.85, max: 1.3 },
+  { key: 'muscle', label: 'عضله', min: 0.85, max: 1.35 },
 ];
 
 const TITLE_SUFFIX = ['آذرخش', 'گرگ‌تیر', 'سایه‌روان', 'قلدر', 'دشت‌گرد', 'آتش‌پیکر', 'بادپا'];
@@ -185,6 +186,73 @@ export function randomName(race: RaceId): string {
   const base = r.names[Math.floor(Math.random() * r.names.length)];
   return Math.random() < 0.45 ? `${base} ${TITLE_SUFFIX[Math.floor(Math.random() * TITLE_SUFFIX.length)]}` : base;
 }
+
+// ── اعتبارسنجی پریست (A07) ───────────────────────────────────
+// پریست نامعتبر هرگز نباید state را خراب کند یا به خطای اجرا برود.
+import { z } from 'zod';
+
+const hexColor = z.string().regex(/^#[0-9a-fA-F]{6}$/, 'invalid hex color');
+const ratio = z.number().finite().min(0.5).max(2);
+
+const PhysiqueSchema = z.object({
+  leg: ratio, arm: ratio, torso: ratio,
+  shoulder: ratio, head: ratio, muscle: ratio,
+});
+
+const ConfigSchema = z.object({
+  name: z.string().max(60).catch('قهرمان'),
+  race: z.enum(['human', 'elf', 'orc', 'dwarf', 'undead']),
+  body: z.string().max(60),
+  skin: hexColor,
+  hair: z.enum(['baked', 'none', 'short', 'long', 'ponytail', 'mohawk']),
+  hairColor: hexColor,
+  beard: z.enum(['baked', 'none', 'stubble', 'full', 'long']),
+  beardColor: hexColor,
+  ears: z.boolean(),
+  tusks: z.boolean(),
+  cloth: hexColor,
+  metal: hexColor,
+  bone: hexColor,
+  weapon: z.string().max(60),
+  helmet: z.boolean(),
+  cape: z.boolean(),
+  height: z.number().finite().min(0.3).max(1.5),
+  bulk: z.number().finite().min(0.5).max(2),
+  physique: PhysiqueSchema,
+});
+
+const PresetSchema = z.object({
+  version: z.number().optional(),
+  config: ConfigSchema,
+});
+
+/**
+ * پریست JSON را اعتبارسنجی و نرمال می‌کند؛
+ * در حالت نامعتبر null برمی‌گرداند و هرگز state را خراب نمی‌کند.
+ */
+export function validatePreset(data: unknown): CharConfig | null {
+  const parsed = PresetSchema.safeParse(data);
+  if (!parsed.success) return null;
+  const c = parsed.data.config;
+  const race = RACES[c.race];
+  // نرمال‌سازی ارجاع‌های متقابل — body باید به نژاد تعلق داشته باشد
+  const body = (race.bodies as string[]).includes(c.body) && c.body in BODIES
+    ? c.body as CharConfig['body']
+    : race.defaultBody;
+  const bodyDef = BODIES[body];
+  const weapon = bodyDef.weapons.some((w) => w.id === c.weapon)
+    ? c.weapon
+    : bodyDef.defaultWeapon;
+  return {
+    ...c,
+    name: c.name.trim() || 'قهرمان',
+    body,
+    weapon,
+    helmet: bodyDef.helmet ? c.helmet : false,
+    cape: bodyDef.cape ? c.cape : false,
+  };
+}
+
 
 /** وقتی نژاد عوض می‌شود: رنگ‌ها/ویژگی‌های نژادی اعمال و نام نژادی جدید انتخاب می‌شود */
 export function rebaseConfigForRace(_cfg: CharConfig, race: RaceId): CharConfig {

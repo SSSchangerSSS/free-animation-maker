@@ -4,7 +4,7 @@
 // ─────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import { clone as skeletonClone } from 'three/addons/utils/SkeletonUtils.js';
-import { BODIES, loadBody, type BodyDef, type BodyId } from './kaykit';
+import { BODIES, loadBody, isSharedGeometry, type BodyDef, type BodyId } from './kaykit';
 import {
   buildPartMasks, createRecolorTarget, applyRecolors,
   type RecolorTarget, type RecolorColors, type RecolorKey, type MaskSet,
@@ -19,7 +19,8 @@ import { RACES, type CharConfig } from './types';
 export type { BodyDef, BodyId, RecolorTarget, FeatureMats, HairStyleId, BeardStyleId, Physique };
 
 // ارتفاع هدف هر بدنه (متر) — قبل از ضریب قد کاربر
-const TARGET_HEIGHT: Record<string, number> = {
+// A22 — اکسپورت شده تا UI همان عدد موتور را نمایش دهد
+export const TARGET_HEIGHT: Record<string, number> = {
   Rogue: 1.78, Knight: 1.78, Barbarian: 1.8, Mage: 1.76, Rogue_Hooded: 1.78,
   Skeleton_Warrior: 1.68, Skeleton_Minion: 1.15,
 };
@@ -52,7 +53,7 @@ export interface CharacterBuild {
   dispose: () => void;
 }
 
-const ALL_KEYS: RecolorKey[] = ['skin', 'hair', 'cloth', 'metal', 'bone'];
+const ALL_KEYS: RecolorKey[] = ['skin', 'hair', 'beard', 'cloth', 'metal', 'bone'];
 
 function findBone(root: THREE.Object3D, name: string): THREE.Bone | null {
   let found: THREE.Bone | null = null;
@@ -64,7 +65,7 @@ function findBone(root: THREE.Object3D, name: string): THREE.Bone | null {
 
 function colorsFromCfg(cfg: CharConfig): RecolorColors {
   return {
-    skin: cfg.skin, hair: cfg.hairColor, cloth: cfg.cloth,
+    skin: cfg.skin, hair: cfg.hairColor, beard: cfg.beardColor, cloth: cfg.cloth,
     metal: cfg.metal, bone: cfg.bone,
   };
 }
@@ -243,10 +244,12 @@ export async function buildKaykitCharacter(cfg: CharConfig): Promise<CharacterBu
 
   const featureMats: FeatureMats = {
     hair: new THREE.MeshStandardMaterial({ color: cfg.hairColor, roughness: 0.65, flatShading: true }),
+    // A12 — متریال مستقل ریش
+    beard: new THREE.MeshStandardMaterial({ color: cfg.beardColor, roughness: 0.7, flatShading: true }),
     skin: new THREE.MeshStandardMaterial({ color: cfg.skin, roughness: 0.7, flatShading: true }),
     ivory: new THREE.MeshStandardMaterial({ color: '#e6dcc3', roughness: 0.45, flatShading: true }),
   };
-  [featureMats.hair, featureMats.skin, featureMats.ivory].forEach((m) => { m.envMapIntensity = 0.5; });
+  [featureMats.hair, featureMats.beard, featureMats.skin, featureMats.ivory].forEach((m) => { m.envMapIntensity = 0.5; });
 
   const refreshFeatures = () => {
     // پاک‌سازی اجزای قبلی
@@ -259,7 +262,8 @@ export async function buildKaykitCharacter(cfg: CharConfig): Promise<CharacterBu
     }
     if (!headBone) return;
     const hair = buildHair(cfg.hair, headFrame, featureMats.hair);
-    const beard = buildBeard(cfg.beard, headFrame, featureMats.hair);
+    // A12 — ریش با متریال مستقل
+    const beard = buildBeard(cfg.beard, headFrame, featureMats.beard);
     if (cfg.ears) headBone.add(buildElfEars(headFrame, featureMats.skin));
     if (cfg.tusks) headBone.add(buildTusks(headFrame, featureMats.ivory));
     if (hair.children.length) headBone.add(hair);
@@ -275,14 +279,18 @@ export async function buildKaykitCharacter(cfg: CharConfig): Promise<CharacterBu
       keys: ALL_KEYS,
     });
     featureMats.hair.color.set(next.hairColor);
+    // A12 — رنگ ریش مستقل از مو
+    featureMats.beard.color.set(next.beardColor);
     featureMats.skin.color.set(next.skin);
   };
   applyColors(cfg);
 
+  // A20 — فقط منابع اختصاصی همین نمونه آزاد می‌شوند؛
+  // هندسه‌های اشتراکی با کش body دست نمی‌خورند
   const dispose = () => {
     root.traverse((o) => {
       const m = o as THREE.Mesh;
-      if (m.geometry) m.geometry.dispose();
+      if (m.geometry && !isSharedGeometry(m.geometry)) m.geometry.dispose();
     });
     material?.dispose();
     texture?.dispose();
@@ -300,4 +308,4 @@ export async function buildKaykitCharacter(cfg: CharConfig): Promise<CharacterBu
   };
 }
 
-export { BODIES, RACES };
+export { BODIES, RACES, loadBody };

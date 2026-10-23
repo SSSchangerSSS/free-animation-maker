@@ -16,8 +16,6 @@ export interface ColorRange {
   light: [number, number];
 }
 
-export type RecolorKey = 'skin' | 'hair' | 'cloth' | 'metal' | 'bone';
-
 export interface RecolorRule {
   /** پسوند نام تکه‌ها (lowercase includes) */
   parts: string[];
@@ -29,6 +27,8 @@ export interface RecolorRule {
 export interface RecolorColors {
   skin: string;
   hair: string;
+  /** رنگ ریش — اسلات مستقل از مو (A12) */
+  beard: string;
   cloth: string;
   metal: string;
   bone: string;
@@ -55,11 +55,24 @@ export function hexToRgb(hex: string): [number, number, number] {
   return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
 }
 
+/**
+ * A21 — بازه‌ی hue با پوشش کامل دورپیچ ۳۶۰°:
+ * حدود نرمال می‌شوند و بازه‌هایی مثل [348,372] یا [348,12] درست کار می‌کنند.
+ * بازه‌ی صریح کامل (مثل [0,360]) هم همه‌ی hue ها را می‌پذیرد.
+ */
+export function inHueRange(h: number, range: [number, number]): boolean {
+  const from = range[0], to = range[1];
+  // پهنای صریح ≥ ۳۶۰ = بازه کامل
+  if (to - from >= 360) return true;
+  const span = (((to - from) % 360) + 360) % 360;
+  const dh = (((h - from) % 360) + 360) % 360;
+  if (span < 1e-9) return dh < 1e-9; // تک‌هو
+  return dh <= span;
+}
+
 function inRange(h: number, s: number, l: number, r: ColorRange): boolean {
-  let hueOk: boolean;
-  if (r.hue[0] <= r.hue[1]) hueOk = h >= r.hue[0] && h <= r.hue[1];
-  else hueOk = h >= r.hue[0] || h <= r.hue[1] - 360;
-  return hueOk && s >= r.sat[0] && s <= r.sat[1] && l >= r.light[0] && l <= r.light[1];
+  return inHueRange(h, r.hue)
+    && s >= r.sat[0] && s <= r.sat[1] && l >= r.light[0] && l <= r.light[1];
 }
 
 // ── ماسک UV تکه‌های بدن ──────────────────────────────────────
@@ -131,12 +144,16 @@ export interface ApplyOptions {
   keys?: RecolorKey[];
 }
 
+export type RecolorKey = 'skin' | 'hair' | 'beard' | 'cloth' | 'metal' | 'bone';
+
 export interface RecolorTarget {
-  /** تکسچر اصلی (باید CanvasTexture با image اصلی باشد) */
+  /** تکسچر زنده (CanvasTexture ای که رندر می‌شود) */
   texture: THREE.Texture;
   masks: MaskSet;
   rules: Partial<Record<RecolorKey, RecolorRule[]>>;
-  /** وضعیت فعلی پیکسل‌ها (بین اعمال‌ها حفظ می‌شود) */
+  /** ⚠️ A01 — تصویر «اصلی» تغییرناپذیر؛ ماسک‌ها هر بار از همین ساخته می‌شوند */
+  original: ImageData;
+  /** وضعیت فعلی پیکسل‌ها (برای سازگاری API) */
   current: ImageData;
   /** دیباگ: تعداد پیکسل‌های رنگ‌شده در آخرین اعمال */
   lastPainted: number;
@@ -150,8 +167,9 @@ export function createRecolorTarget(texture: THREE.Texture, masks: MaskSet): Rec
   canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
   ctx.drawImage(img, 0, 0, W, H);
-  const current = ctx.getImageData(0, 0, W, H);
-  return { texture, masks, rules: {}, current, lastPainted: 0 };
+  const original = ctx.getImageData(0, 0, W, H);
+  const current = new ImageData(new Uint8ClampedArray(original.data), W, H);
+  return { texture, masks, rules: {}, original, current, lastPainted: 0 };
 }
 
 function paintPixel(data: Uint8ClampedArray, idx: number, color: [number, number, number], factor: number) {
@@ -161,7 +179,8 @@ function paintPixel(data: Uint8ClampedArray, idx: number, color: [number, number
 }
 
 /**
- * بازرنگی اسلات‌ها روی current و آپدیت تکسچر.
+ * بازرنگی اسلات‌ها — A01: هر بار از «تصویر اصلی» شروع می‌شود تا
+ * تغییرهای متوالی تجمعی نشوند (A→B→C = A→C و بازگشت به رنگ اول دقیق است).
  * rules: قواعد هر اسلات برای این بدنه.
  */
 export function applyRecolors(
@@ -169,35 +188,30 @@ export function applyRecolors(
   colors: RecolorColors,
   options: ApplyOptions = {},
 ): void {
-  const { masks } = target;
+  const { masks, original } = target;
   const W = masks.width, H = masks.height;
-  // از تصویر اصلی شروع می‌کنیم تا اعمال‌ها تجمعی نشوند
-  const img = target.texture.image as HTMLImageElement | HTMLCanvasElement;
-  const canvas = document.createElement('canvas');
-  canvas.width = W; canvas.height = H;
-  const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
-  ctx.drawImage(img, 0, 0, W, H);
-  const frame = ctx.getImageData(0, 0, W, H);
+  // A01 — منبع همیشه original است، نه خروجی اعمال قبلی
+  const frame = new ImageData(new Uint8ClampedArray(original.data), W, H);
   const data = frame.data;
-  const px = target.current; // نگه‌داری نسخه فعلی برای سازگاری API
+  const px = target.current;
 
   const skinC = hexToRgb(colors.skin);
   const hairC = hexToRgb(colors.hair);
+  const beardC = hexToRgb(colors.beard);
   const clothC = hexToRgb(colors.cloth);
   const metalC = hexToRgb(colors.metal);
   const boneC = hexToRgb(colors.bone);
   const colorMap: Record<RecolorKey, [number, number, number]> = {
-    skin: skinC, hair: hairC, cloth: clothC, metal: metalC, bone: boneC,
+    skin: skinC, hair: hairC, beard: beardC, cloth: clothC, metal: metalC, bone: boneC,
   };
-  const meanLMap: Record<RecolorKey, number> = { skin: 0.75, hair: 0.45, cloth: 0.5, metal: 0.65, bone: 0.5 };
 
   const keys = options.keys ?? (Object.keys(target.rules) as RecolorKey[]);
-  // پاک‌سازی مو/ریش داخلی = بازرنگی اسلات مو با رنگ پوست
+  // A12 — پاک‌سازی مو و ریش داخلی مستقل از هم:
+  // مو فقط اسلات hair را با پوست، ریش فقط اسلات beard را با پوست بازرنگی می‌کند
   const keyPaint: Record<string, [number, number, number]> = {};
   for (const k of keys) keyPaint[k] = colorMap[k];
-  if (options.eraseHair || options.eraseBeard) {
-    keyPaint.hair = skinC;
-  }
+  if (options.eraseHair) keyPaint.hair = skinC;
+  if (options.eraseBeard) keyPaint.beard = skinC;
 
   // آماده‌سازی ماسک مرکب هر قاعده
   type Job = { mask: Uint8Array; color: [number, number, number]; meanL: number; rule: RecolorRule };
@@ -236,10 +250,12 @@ export function applyRecolors(
   }
   target.lastPainted = painted;
 
-  ctx.putImageData(frame, 0, 0);
+  const canvas = document.createElement('canvas');
+  canvas.width = W; canvas.height = H;
+  canvas.getContext('2d')!.putImageData(frame, 0, 0);
   const tex = target.texture;
   tex.image = canvas;
   tex.needsUpdate = true;
-  // نگه‌داری وضعیت
+  // نگه‌داری وضعیت فعلی
   px.data.set(frame.data);
 }

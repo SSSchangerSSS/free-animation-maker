@@ -43,7 +43,8 @@ export function isNeutralPhysique(p: Physique): boolean {
     && p.shoulder === 1 && p.head === 1 && p.muscle === 1;
 }
 
-const clamp01 = (v: number) => Math.min(1.35, Math.max(0.8, v || 1));
+// A22 — بازه‌ی clamp با اسلایدرها هم‌تراز شد: head تا 0.75 و عضله تا 1.35
+const clamp01 = (v: number) => Math.min(1.35, Math.max(0.75, v || 1));
 
 /** پیش‌فرض فیزیک هر نژاد — ضدچیبی + شخصیت نژادی */
 export const RACE_PHYSIQUE: Record<string, Physique> = {

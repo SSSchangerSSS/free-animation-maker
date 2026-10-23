@@ -7,22 +7,15 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { buildKaykitCharacter, type CharacterBuild, type WeaponMode, type GripTweak } from '../character';
+import { buildKaykitCharacter, loadBody, type CharacterBuild, type WeaponMode, type GripTweak } from '../character';
 import type { CharConfig } from '../character/types';
 import { buildClipLibrary, ANIM_DEFS } from '../animation/clips';
+import { assetUrl } from '../base-path';
 import {
   importExternalModel, detectHumanoidBones, measureRest, measureSourceRest,
   retargetClipCustom, retargetClipFromRest,
-  type ImportedClipDef, type BoneMapping, type TargetRest,
+  type ImportedClipDef, type ImportedModel, type BoneMapping, type TargetRest, type SourceRest, type LibraryClipDef,
 } from '../animation/retarget';
-
-type ImportedModel = {
-  wrapper: THREE.Group;
-  mixer: THREE.AnimationMixer;
-  clips: ImportedClipDef[];
-  report: { found: string[]; missing: string[]; boneCount: number; modelClips: number; ok: boolean };
-  dispose: () => void;
-};
 
 export type AnimOrigin = 'kaykit' | 'ual' | 'proc' | 'model';
 export type AnimCat = 'combat' | 'loco' | 'magic' | 'social' | 'other';
@@ -226,7 +219,16 @@ export class Engine {
   public mode: 'creator' | 'imported' = 'creator';
   onImportedChange?: (imported: boolean) => void;
   onLoadingChange?: (loading: boolean) => void;
+  /** A11 — اطلاع تغییر انیمیشن فعال از موتور به UI (بازگشت از one-shot و…) */
+  onAnimChange?: (id: string) => void;
   private lastLoopAnim = 'kk:Idle';
+
+  // سرعت پخش — پس از بازسازی کاراکتر/import حفظ می‌شود (A11)
+  private speed = 1;
+  // A09 — نسل‌ها و پرچم‌های عمر موتور برای جلوگیری از مسابقه‌ی async
+  private disposed = false;
+  private importSeq = 0;
+  private libraryGen = 0;
 
   // رجیستری مادر — بین بدنه‌ها مشترک
   private masterClips: Record<string, { clip: THREE.AnimationClip; info: EngineAnimInfo }> = {};
@@ -235,7 +237,15 @@ export class Engine {
   private ualLoading = false;
   private kaykitMapping?: BoneMapping;
   private kaykitRest?: TargetRest;
+  /** A02 — منبع rest مرجع KayKit برای ریتارگت کلیپ‌های kk به مدل واردی */
+  private kaykitSrcRest: SourceRest | null = null;
+  /** A02 — کلیپ‌های خام UAL + rest مبدأ برای ریتارگت به مدل واردی */
+  private ualRaw: { clips: THREE.AnimationClip[]; srcRest: SourceRest } | null = null;
   onLibraryChange?: () => void;
+
+  // منابع محیط برای پاک‌سازی کامل (A20)
+  private groundObjects: THREE.Object3D[] = [];
+  private envTexture?: THREE.Texture;
 
   // پریست دوربین
   private camTween?: { t: number; dur: number; fromP: THREE.Vector3; toP: THREE.Vector3; fromT: THREE.Vector3; toT: THREE.Vector3 };
@@ -274,8 +284,10 @@ export class Engine {
     this.scene.fog = new THREE.Fog('#100d09', 8, 18);
 
     const pmrem = new THREE.PMREMGenerator(this.renderer);
-    this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    this.envTexture = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    this.scene.environment = this.envTexture;
     this.scene.environmentIntensity = 0.42;
+    pmrem.dispose();
 
     this.camera = new THREE.PerspectiveCamera(
       38, this.container.clientWidth / Math.max(1, this.container.clientHeight), 0.1, 60,
@@ -355,6 +367,9 @@ export class Engine {
     ground.position.y = -0.05;
     ground.receiveShadow = true;
     this.scene.add(ground);
+
+    // A20 — ردیابی برای آزادسازی کامل در dispose
+    this.groundObjects = [disc, ring, ground];
   }
 
   private initControls() {
@@ -387,8 +402,9 @@ export class Engine {
       this.controls.target.lerpVectors(tw.fromT, tw.toT, e);
       if (tw.t >= 1) this.camTween = undefined;
     }
+    // A06 — فقط میکسر فعال یک بار آپدیت می‌شود؛ در حالت واردشده
+    // this.mixer همان mixer مدل واردی است و قبلاً دوبار جلو می‌رفت
     this.mixer?.update(dt);
-    this.imported?.mixer.update(dt);
     this.character?.update(dt);
     this.controls.update();
     this.renderer.render(this.scene, this.camera);
@@ -416,6 +432,19 @@ export class Engine {
     this.masterClips[id] = { clip, info: { id, label, cat, loop, origin } };
   }
 
+  /**
+   * A19 — ابطال کش ریتارگت هنگام تغییر ساختار بدنه؛ کلیپ‌های proc/ual
+   * با rest بدنه‌ی قبلی ساخته شده‌اند و باید از نو ساخته شوند.
+   */
+  private invalidateLibrary() {
+    this.libraryGen++;
+    for (const id of Object.keys(this.masterClips)) {
+      if (id.startsWith('proc:') || id.startsWith('ual:')) delete this.masterClips[id];
+    }
+    this.kaykitRetargeted = false;
+    this.ualReady = false;
+  }
+
   private registerKaykitClips(anims: THREE.AnimationClip[]) {
     for (const a of anims) {
       const [label, cat, loop] = classifyKaykit(a.name);
@@ -426,16 +455,30 @@ export class Engine {
   /** پس از اولین لود بدنه: ریتارگت کلیپ‌های رویه‌ای + UAL به ریگ KayKit */
   private async buildRetargetedLibrary() {
     if (this.kaykitRetargeted || !this.character) return;
+    const gen = this.libraryGen;
     const root = this.character.root;
+    // A09 — بعد از هر await بررسی می‌شود؛ کار منقضی نتیجه‌ی بدنه‌ی جدید را خراب نمی‌کند
+    const alive = () => !this.disposed && gen === this.libraryGen
+      && this.mode === 'creator' && this.character?.root === root;
     const mapping = detectHumanoidBones(root);
     const rest = measureRest(root, mapping);
     this.kaykitMapping = mapping;
     this.kaykitRest = rest;
 
+    // A02 — منبع rest مرجع KayKit (بدنه‌ی دست‌نخورده، بدون reshape) — یک‌بار
+    if (!this.kaykitSrcRest && this.lastConfig?.body) {
+      try {
+        const loaded = await loadBody(this.lastConfig.body);
+        if (!alive()) return;
+        this.kaykitSrcRest = measureSourceRest(loaded.pristine, mapping.target.hips?.name ?? 'hips');
+      } catch { /* بدون منبع rest، کلیپ‌های kk به مدل واردی منتقل نمی‌شوند */ }
+    }
+
     // ۱) کلیپ‌های رویه‌ای canonical → KayKit
     for (const def of ANIM_DEFS) {
       try {
         const rc = retargetClipCustom(this.procClips[def.id], mapping, rest);
+        if (!alive()) return;
         this.registerClip(`proc:${def.id}`, def.label, def.id === 'cast' ? 'magic' : def.id === 'dance' ? 'social' : def.id === 'attack' || def.id === 'hit' || def.id === 'death' ? 'combat' : 'loco', def.loop, 'proc', rc);
       } catch { /* بی‌خیال کلیپ خراب */ }
     }
@@ -444,18 +487,28 @@ export class Engine {
     this.onLibraryChange?.();
 
     // ۲) UAL به‌صورت async chunked
-    if (!this.ualReady && !this.ualLoading) {
+    if (!this.ualReady) {
       this.ualLoading = true;
       try {
-        const base = process.env.NEXT_PUBLIC_BASE_PATH ?? '';
         const ual = await new Promise<{ scene: THREE.Group; animations: THREE.AnimationClip[] }>((res, rej) =>
-          new GLTFLoader().load(`${base}/models/UAL.glb`, (g) => res(g as unknown as { scene: THREE.Group; animations: THREE.AnimationClip[] }), undefined, rej));
+          new GLTFLoader().load(assetUrl('/models/UAL.glb'), (g) => res(g as unknown as { scene: THREE.Group; animations: THREE.AnimationClip[] }), undefined, rej));
+        if (!alive()) return;
         const srcRest = measureSourceRest(ual.scene, 'pelvis');
+        // A02 — نگهداری خام برای ریتارگت بعدی به مدل‌های واردی؛ صحنه دیگر لازم نیست
+        this.ualRaw = { clips: ual.animations, srcRest };
+        ual.scene.traverse((o) => {
+          const m = o as THREE.Mesh;
+          if (m.geometry) m.geometry.dispose();
+          const mat = m.material as THREE.Material | THREE.Material[] | undefined;
+          if (Array.isArray(mat)) mat.forEach((x) => x.dispose());
+          else if (mat) mat.dispose();
+        });
         let i = 0;
         for (const clip of ual.animations) {
           const [label, cat, loop] = UAL[clip.name] ?? [prettify(clip.name), 'other' as AnimCat, true];
           try {
             const rc = retargetClipFromRest(clip, srcRest, mapping, rest);
+            if (!alive()) return; // A09 — ثبت با rest قدیمی ممنوع
             this.registerClip(`ual:${clip.name}`, label, cat, loop, 'ual', rc);
           } catch (e) {
             console.error('UAL retarget fail', clip.name, e);
@@ -464,15 +517,19 @@ export class Engine {
             this.rebuildActions();
             this.onLibraryChange?.();
             await new Promise((r) => setTimeout(r, 0));
+            if (!alive()) return;
           }
         }
-        this.ualReady = true;
+        if (gen === this.libraryGen) this.ualReady = true;
       } catch (e) {
         console.error('UAL load failed', e);
+      } finally {
+        if (gen === this.libraryGen) this.ualLoading = false;
       }
-      this.ualLoading = false;
-      this.rebuildActions();
-      this.onLibraryChange?.();
+      if (alive()) {
+        this.rebuildActions();
+        this.onLibraryChange?.();
+      }
     }
   }
 
@@ -501,14 +558,17 @@ export class Engine {
       return;
     }
 
+    // A19 — تغییر ساختار بدنه ⇒ کش ریتارگت با rest قبلی باطل می‌شود
+    this.invalidateLibrary();
     this.onLoadingChange?.(true);
     // ساخت ممکن است چند فریم طول بکشد — فرصت رندر به مرورگر بده
     await new Promise((r) => setTimeout(r, 20));
-    if (seq !== this.buildSeq) return; // درخواست جدیدتری در راه است
+    if (this.disposed || seq !== this.buildSeq) return;
     try {
       if (this.mode !== 'creator') this.exitImported();
+      if (this.disposed || seq !== this.buildSeq) return;
       const build = await buildKaykitCharacter(cfg);
-      if (seq !== this.buildSeq) { build.dispose(); return; }
+      if (this.disposed || seq !== this.buildSeq) { build.dispose(); return; }
       const prev = this.character;
       if (prev) {
         this.scene.remove(prev.root);
@@ -523,15 +583,19 @@ export class Engine {
 
       this.mixer?.stopAllAction();
       this.mixer = new THREE.AnimationMixer(build.root);
+      // A11 — سرعت قبلی پس از بازسازی حفظ می‌شود
+      this.mixer.timeScale = this.speed;
       this.mixer.addEventListener('finished', (e) => {
         const name = (e as { action?: THREE.AnimationAction }).action?.getClip().name ?? '';
         // مرگ روی زمین می‌ماند؛ بقیه‌ی کلیپ‌های یک‌بارمصرف به حلقه‌ی قبلی برمی‌گردند
         if (!name.includes('مرگ') && !/Death/i.test(name)) this.play(this.lastLoopAnim, true);
       });
 
-      // ثبت کلیپ‌های این بدنه + ریتارگت کتابخانه‌ها (فقط بار اول)
+      // ثبت کلیپ‌های این بدنه + ریتارگت کتابخانه‌ها
       this.registerKaykitClips(build.animations);
       await this.buildRetargetedLibrary();
+      // A09 — بعد از await طولانی کتابخانه، درخواست جدیدتری در راه است؟
+      if (this.disposed || seq !== this.buildSeq) return;
 
       this.rebuildActions();
       this.lastStructural = structural;
@@ -546,7 +610,8 @@ export class Engine {
       }
       if (this.currentAnim) this.play(this.currentAnim, true);
     } finally {
-      this.onLoadingChange?.(false);
+      // A09 — لودینگ فقط توسط آخرین درخواست خاموش می‌شود
+      if (seq === this.buildSeq && !this.disposed) this.onLoadingChange?.(false);
     }
   }
 
@@ -563,9 +628,11 @@ export class Engine {
   }
 
   play(id: string, instant = false) {
+    if (this.disposed) return;
     const next = this.actions[id];
     if (!next || !this.mixer) return;
-    const info = this.masterClips[id]?.info;
+    // A16 — اطلاعات کلیپ‌های مدل واردی از anims می‌آید (masterClips ندارند)
+    const info = this.masterClips[id]?.info ?? this.anims.find((a) => a.id === id);
     next.setLoop(info?.loop === false ? THREE.LoopOnce : THREE.LoopRepeat, Infinity);
     next.clampWhenFinished = info?.loop === false;
     const prev = this.actions[this.currentAnim];
@@ -583,13 +650,16 @@ export class Engine {
       this.character.setWeaponMode(weaponModeFor(id));
       this.character.setGripTweak(gripTweakFor(id));
     }
+    // A11 — UI از تغییر انیمیشن (شامل بازگشت از one-shot) باخبر می‌شود
+    this.onAnimChange?.(id);
   }
 
   get currentAnimId() { return this.currentAnim; }
 
   setSpeed(s: number) {
+    this.speed = s;
     if (this.mixer) this.mixer.timeScale = s;
-    if (this.imported) this.imported.mixer.timeScale = s;
+    if (this.imported && this.imported.mixer !== this.mixer) this.imported.mixer.timeScale = s;
   }
 
   setAutoRotate(on: boolean) {
@@ -601,10 +671,41 @@ export class Engine {
   }
 
   // ── Import مدل خارجی ─────────────────────────────────────
-  async importGLB(buffer: ArrayBuffer, onProgress?: (done: number, total: number) => void): Promise<ImportedModel['report']> {
-    // کتابخانه‌ی مادر برای ریتارگت
-    const lib = Object.entries(this.masterClips).map(([id, m]) => ({ id, label: m.info.label, loop: m.info.loop, clip: m.clip }));
-    const imp = await importExternalModel(buffer, lib, onProgress);
+  async importGLB(
+    buffer: ArrayBuffer,
+    resourceFiles?: Map<string, string>,
+    onProgress?: (done: number, total: number) => void,
+  ): Promise<ImportedModel['report']> {
+    const seq = ++this.importSeq;
+    // A02 — هر کلیپ با قرارداد مبدأ خودش به مدل واردی ریتارگت می‌شود:
+    //  • kk  → خام + SourceRest مرجع KayKit (مسیر عمومی retargetClipFromRest)
+    //  • proc→ خام canonical (retargetClipCustom)
+    //  • ual → خام + SourceRest مبدأ UAL
+    const lib: LibraryClipDef[] = [];
+    for (const [id, m] of Object.entries(this.masterClips)) {
+      if (id.startsWith('kk:')) {
+        if (!this.kaykitSrcRest) continue;
+        lib.push({ id, label: m.info.label, loop: m.info.loop, cat: m.info.cat, origin: 'kaykit', clip: m.clip, kind: 'rest', srcRest: this.kaykitSrcRest });
+      } else if (id.startsWith('proc:')) {
+        const raw = this.procClips[id.slice(5)];
+        if (raw) lib.push({ id, label: m.info.label, loop: m.info.loop, cat: m.info.cat, origin: 'proc', clip: raw, kind: 'canonical' });
+      } else if (id.startsWith('ual:')) {
+        const rawName = id.slice(4);
+        const raw = this.ualRaw?.clips.find((c) => c.name === rawName);
+        if (raw && this.ualRaw) lib.push({ id, label: m.info.label, loop: m.info.loop, cat: m.info.cat, origin: 'ual', clip: raw, kind: 'rest', srcRest: this.ualRaw.srcRest });
+      }
+    }
+    const imp = await importExternalModel(buffer, {
+      library: lib,
+      onProgress,
+      resourceFiles,
+      // A09/A27 — لغو در صورت dispose یا import تازه‌تر
+      shouldAbort: () => this.disposed || seq !== this.importSeq,
+    });
+    if (this.disposed || seq !== this.importSeq) {
+      imp.dispose();
+      throw new Error('IMPORT_STALE');
+    }
     if (this.character) {
       this.mixer?.stopAllAction();
       this.scene.remove(this.character.root);
@@ -618,15 +719,20 @@ export class Engine {
     }
     this.imported = imp;
     this.mixer = imp.mixer;
+    // A11 — سرعت فعال روی mixer جدید اعمال می‌شود
+    this.mixer.timeScale = this.speed;
     this.mixer.addEventListener('finished', (e) => {
       const name = (e as { action?: THREE.AnimationAction }).action?.getClip().name ?? '';
       if (!name.includes('مرگ') && !/Death/i.test(name)) this.play(this.lastLoopAnim, true);
     });
 
     this.actions = {};
-    this.anims = imp.clips.map((c) => ({
-      id: c.id, label: c.label, cat: 'other' as AnimCat, loop: c.loop,
-      origin: (c.origin === 'model' ? 'model' : 'proc') as AnimOrigin,
+    // A16 — دسته/منشأ/حلقه از نتیجه‌ی واقعی import می‌آید
+    this.anims = imp.clips.map((c: ImportedClipDef) => ({
+      id: c.id, label: c.label,
+      cat: (c.cat as AnimCat) ?? 'other',
+      loop: c.loop,
+      origin: (c.origin === 'model' ? 'model' : (c.source as AnimOrigin) ?? 'proc') as AnimOrigin,
     }));
     for (const c of imp.clips) {
       this.actions[c.id] = imp.mixer.clipAction(c.clip);
@@ -641,6 +747,7 @@ export class Engine {
 
   exitImported() {
     if (!this.imported) return;
+    this.importSeq++; // A09 — import های در راه را منقضی کن
     this.mixer?.stopAllAction();
     this.scene.remove(this.imported.wrapper);
     this.imported.dispose();
@@ -655,19 +762,31 @@ export class Engine {
   get isImported() { return this.mode === 'imported'; }
 
   // ── Export ────────────────────────────────────────────────
+  /** فیلتر کلیپ‌های معتبر برای صحنه‌ی خروجی (A18) */
+  private filterClipsForTarget(clips: THREE.AnimationClip[], target: THREE.Object3D): THREE.AnimationClip[] {
+    const nodeNames = new Set<string>();
+    target.traverse((o) => nodeNames.add(o.name));
+    return clips.filter((c) =>
+      c.tracks.length > 0 && c.tracks.every((t) => nodeNames.has(t.name.split('.')[0])));
+  }
+
   exportGLB(): Promise<Blob> {
     const target = this.mode === 'imported' ? this.imported?.wrapper : this.character?.root;
     if (!target) return Promise.reject(new Error('چیزی برای خروجی گرفتن نیست'));
     const exporter = new GLTFExporter();
-    const animations = this.mode === 'imported'
+    const allClips = this.mode === 'imported'
       ? (this.imported?.clips ?? []).map((c) => c.clip)
       : Object.values(this.masterClips).map((m) => m.clip);
+    // A18 — فقط کلیپ‌هایی که همه‌ی نودهایشان در همین صحنه موجودند صادر
+    // می‌شوند تا خروجی در Blender/viewer دیگر با پیش‌نمایش یکی باشد
+    const animations = this.filterClipsForTarget(allClips, target);
     return new Promise((res, rej) => {
       exporter.parse(
         target,
         (result) => res(new Blob([result as ArrayBuffer], { type: 'model/gltf-binary' })),
         (err) => rej(err),
-        { binary: true, animations },
+        // A18 — خروجی قطعی: مستقل از وضعیت visibility جاری
+        { binary: true, animations, onlyVisible: false, truncateDrawRange: false },
       );
     });
   }
@@ -678,12 +797,41 @@ export class Engine {
   }
 
   dispose() {
+    // A09 — همه‌ی کارهای async در راه باطل می‌شوند
+    this.disposed = true;
+    this.buildSeq++;
+    this.importSeq++;
+    this.libraryGen++;
     cancelAnimationFrame(this.raf);
     this.ro?.disconnect();
     this.controls?.dispose();
+    this.mixer?.stopAllAction();
     this.character?.dispose();
+    this.character = undefined;
     this.imported?.dispose();
+    this.imported = undefined;
+    // A20 — پاک‌سازی کامل منابع محیط/زمین/تکسچرها و مرجع دیباگ
+    for (const obj of this.groundObjects) {
+      this.scene.remove(obj);
+      obj.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (m.geometry) m.geometry.dispose();
+        const mat = m.material as THREE.MeshStandardMaterial | undefined;
+        if (mat) {
+          mat.map?.dispose();
+          mat.dispose();
+        }
+      });
+    }
+    this.groundObjects = [];
+    this.envTexture?.dispose();
+    this.envTexture = undefined;
+    this.scene.environment = null;
+    if (typeof window !== 'undefined') {
+      delete (window as unknown as { __forge?: unknown }).__forge;
+    }
     this.renderer?.dispose();
+    this.renderer?.forceContextLoss();
     this.renderer?.domElement.remove();
   }
 }

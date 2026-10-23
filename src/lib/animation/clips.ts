@@ -10,10 +10,6 @@ import { BONE_ORDER } from '../character/skeleton';
 const D = Math.PI / 180;
 const HIPS_REST: [number, number, number] = [0, 0.98, 0];
 
-// بازوها در حالت آرام (آویزان با کمی فاصله از بدن)
-const ARM_L: [number, number, number] = [0, 0, -72];
-const ARM_R: [number, number, number] = [0, 0, 72];
-
 type E = [number, number, number]; // euler xyz بر حسب درجه
 
 function qt(bone: string, times: number[], frames: E[]): THREE.QuaternionKeyframeTrack {
