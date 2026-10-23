@@ -3,52 +3,14 @@
 // هر کلیپ هر ۱۷ استخوان را پوشش می‌دهد تا Crossfade تمیز باشد.
 // زوایا بر حسب درجه نوشته شده‌اند و به رادیان تبدیل می‌شوند.
 // Rest: T-Pose (بازوها افقی) — هر کلیپ «بازو پایین» را خودش می‌سازد.
+// سازنده‌های ترک در trackkit.ts — حمله در posekit.ts کامپایل می‌شود.
 // ─────────────────────────────────────────────────────────────
 import * as THREE from 'three';
-import { BONE_ORDER } from '../character/skeleton';
-
-const D = Math.PI / 180;
-const HIPS_REST: [number, number, number] = [0, 0.98, 0];
-
-type E = [number, number, number]; // euler xyz بر حسب درجه
-
-function qt(bone: string, times: number[], frames: E[]): THREE.QuaternionKeyframeTrack {
-  const values: number[] = [];
-  const q = new THREE.Quaternion();
-  const e = new THREE.Euler();
-  for (const f of frames) {
-    e.set(f[0] * D, f[1] * D, f[2] * D, 'XYZ');
-    q.setFromEuler(e);
-    values.push(q.x, q.y, q.z, q.w);
-  }
-  return new THREE.QuaternionKeyframeTrack(`${bone}.quaternion`, times, values);
-}
-
-function hipsPos(times: number[], dy: number[]): THREE.VectorKeyframeTrack {
-  const values: number[] = [];
-  for (const d of dy) values.push(HIPS_REST[0], HIPS_REST[1] + d, HIPS_REST[2]);
-  return new THREE.VectorKeyframeTrack('hips.position', times, values);
-}
-
-/** حرکت کامل لگن (x/y/z) — برای رقص و حمله با جابه‌جایی */
-function hipsPosFull(times: number[], frames: [number, number, number][]): THREE.VectorKeyframeTrack {
-  const values: number[] = [];
-  for (const d of frames) values.push(HIPS_REST[0] + d[0], HIPS_REST[1] + d[1], HIPS_REST[2] + d[2]);
-  return new THREE.VectorKeyframeTrack('hips.position', times, values);
-}
-
-/** همه‌ی استخوان‌هایی که در کلیپ track ندارند، ثابت اضافه می‌شوند */
-function fill(tracks: THREE.KeyframeTrack[], T: number) {
-  const covered = new Set(tracks.map((t) => t.name.split('.')[0]));
-  for (const b of BONE_ORDER) {
-    if (!covered.has(b)) tracks.push(qt(b, [0, T], [[0, 0, 0], [0, 0, 0]]));
-  }
-}
-
-function makeClip(id: string, T: number, tracks: THREE.KeyframeTrack[]): THREE.AnimationClip {
-  fill(tracks, T);
-  return new THREE.AnimationClip(id, T, tracks);
-}
+import {
+  qt, hipsPos, hipsPosFull, makeClip, type E,
+} from './trackkit';
+import { compileAttack1H, compileAttack2H, swordGeom } from './posekit';
+import { V3_WEAPONS } from '../character/weapons3';
 
 // ── 1) ایستادن (Idle) — تنفس + جابه‌جایی وزن ظریف ────────────
 function idleClip(): THREE.AnimationClip {
@@ -147,63 +109,17 @@ function runClip(): THREE.AnimationClip {
   ]);
 }
 
-// ── 5) حمله (Attack) — ضربه‌ی آبدار با کوبش و بازگشت ─────────
+// ── 5) حمله — کامپایل‌شده از قوس نوک تیغه (posekit) ───────────
+// آماده‌سازی/کولس → رهاسازی مورب نزولی با یورش لگن → ادامه → بازگشت
+// کنترل‌شده. مچ از IK دواستخوانی، تیغه امتداد ساعد.
 function attackClip(): THREE.AnimationClip {
-  const T = 0.95;
-  const t = [0, 0.1, 0.2, 0.32, 0.42, 0.58, 0.76, T];
-  return makeClip('attack', T, [
-    // ضربه‌ی مورب نزولی: کولس (0→0.2) → رهاسازی تند (0.32) → دنباله+بازگشت
-    qt('upperArmR', t, [
-      [0, 0, 72], [-14, 0, 104], [-26, 0, 132], [30, 6, -26], [36, 4, -44], [16, 2, 8], [4, 0, 44], [0, 0, 72],
-    ]),
-    qt('lowerArmR', t, [
-      [0, 10, 0], [0, 58, 0], [0, 88, 0], [-12, 12, 0], [-8, 22, 0], [0, 26, 0], [0, 18, 0], [0, 10, 0],
-    ]),
-    qt('upperArmL', t, [
-      [0, 0, -72], [-8, 0, -58], [-14, 0, -50], [2, 0, -74], [6, 0, -80], [2, 0, -76], [0, 0, -74], [0, 0, -72],
-    ]),
-    qt('lowerArmL', t, [
-      [0, -14, 0], [0, -46, 0], [0, -58, 0], [0, -28, 0], [0, -22, 0], [0, -18, 0], [0, -15, 0], [0, -14, 0],
-    ]),
-    // تنه: چرخش پشت → چرخش تند رو به ضربه + خم رو به جلو
-    qt('chest', t, [
-      [0, 0, 0], [3, 16, 0], [6, 28, 0], [12, -26, 0], [10, -20, 0], [5, -8, 0], [1, -2, 0], [0, 0, 0],
-    ]),
-    qt('spine', t, [
-      [0, 0, 0], [2, 8, 0], [3, 14, 0], [6, -13, 0], [5, -10, 0], [2, -4, 0], [0, -1, 0], [0, 0, 0],
-    ]),
-    qt('neck', t, [
-      [0, 0, 0], [-1, -6, 0], [-2, -10, 0], [2, 9, 0], [1, 6, 0], [0, 2, 0], [0, 0, 0], [0, 0, 0],
-    ]),
-    qt('head', t, [
-      [0, 0, 0], [-2, -10, 0], [-3, -17, 0], [4, 15, 0], [3, 9, 0], [1, 3, 0], [0, 0, 0], [0, 0, 0],
-    ]),
-    qt('hips', t, [
-      [0, 0, 0], [0, 12, 0], [0, 24, 0], [0, -20, 0], [0, -14, 0], [0, -5, 0], [0, -1, 0], [0, 0, 0],
-    ]),
-    // پاها: کولس روی پای راست → یورش به جلو با پای چپ
-    qt('upperLegR', t, [
-      [0, 0, 0], [-8, 0, 0], [-14, 0, 2], [16, 0, -2], [10, 0, -2], [4, 0, 0], [0, 0, 0], [0, 0, 0],
-    ]),
-    qt('upperLegL', t, [
-      [0, 0, 0], [8, 0, 0], [14, 0, -2], [-20, 0, 2], [-12, 0, 2], [-4, 0, 0], [0, 0, 0], [0, 0, 0],
-    ]),
-    qt('lowerLegR', t, [
-      [4, 0, 0], [8, 0, 0], [14, 0, 0], [10, 0, 0], [8, 0, 0], [6, 0, 0], [4, 0, 0], [4, 0, 0],
-    ]),
-    qt('lowerLegL', t, [
-      [4, 0, 0], [10, 0, 0], [16, 0, 0], [12, 0, 0], [8, 0, 0], [6, 0, 0], [4, 0, 0], [4, 0, 0],
-    ]),
-    qt('footR', t, [
-      [0, 0, 0], [-4, 0, 0], [-8, 0, 0], [6, 0, 0], [4, 0, 0], [2, 0, 0], [0, 0, 0], [0, 0, 0],
-    ]),
-    qt('footL', t, [
-      [0, 0, 0], [4, 0, 0], [8, 0, 0], [-8, 0, 0], [-4, 0, 0], [-2, 0, 0], [0, 0, 0], [0, 0, 0],
-    ]),
-    hipsPosFull(t, [
-      [0, 0, 0], [0, -0.015, -0.01], [-0.01, -0.03, -0.02], [0.015, 0.008, 0.045], [0.008, -0.008, 0.03], [0.002, -0.012, 0.01], [0, -0.004, 0], [0, 0, 0],
-    ]),
-  ]);
+  return compileAttack1H();
+}
+
+// ── 5b) حمله‌ی دو‌دست — مچ چپ روی grip2 (هندسه از پروفایل سلاح) ─
+function attack2hClip(): THREE.AnimationClip {
+  const w = V3_WEAPONS.sword2h;
+  return compileAttack2H(swordGeom(w.scale, w.bladeTo, w.grip2));
 }
 
 // ── 6) سلام (Wave) — موج با آرنج + دست دیگر روی کمر ─────────
@@ -571,6 +487,7 @@ export const ANIM_DEFS: AnimDef[] = [
   { id: 'walk', label: 'راه رفتن', loop: true, desc: 'چرخه راه رفتن' },
   { id: 'run', label: 'دویدن', loop: true, desc: 'چرخه دویدن سریع' },
   { id: 'attack', label: 'حمله', loop: false, desc: 'ضربه شمشیر یک‌بار مصرف' },
+  { id: 'attack2h', label: 'حمله دو‌دست', loop: false, desc: 'برش دو‌دست با هر دو دست روی دسته' },
   { id: 'cast', label: 'افسون‌خوانی', loop: true, desc: 'جمع کردن انرژی و پرتاب' },
   { id: 'wave', label: 'سلام', loop: true, desc: 'دست تکان دادن' },
   { id: 'dance', label: 'رقص', loop: true, desc: 'رقص شاد پیروزی' },
@@ -589,6 +506,7 @@ export function buildClipLibrary(): Record<string, THREE.AnimationClip> {
     walk: walkClip(),
     run: runClip(),
     attack: attackClip(),
+    attack2h: attack2hClip(),
     cast: castClip(),
     wave: waveClip(),
     dance: danceClip(),

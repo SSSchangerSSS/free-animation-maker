@@ -20,8 +20,18 @@ export interface RecolorRule {
   /** پسوند نام تکه‌ها (lowercase includes) */
   parts: string[];
   range: ColorRange;
-  /** روشنایی مرجع بازه — برای حفظ گرادیان سایه */
+  /** روشنایی مرجع بازه — برای حفظ گرادیان سایه (فقط حالت multiply) */
   meanL: number;
+  /**
+   * حالت رنگ:
+   *  • multiply (پیش‌فرض — KayKit): ضرب رنگ × (l/meanL)
+   *  • shade (تکسچرهای سایه‌دار Quaternius): hue/sat از رنگ کاربر،
+   *    lightness = L رنگ + (l پیکسل − meanL) × contrast ⇒
+   *    سایه‌ی تکسچر حفظ و روشنایی با انتخاب کاربر هم‌تراز می‌شود
+   */
+  mode?: 'multiply' | 'shade';
+  /** فشرده‌سازی دلتای سایه در حالت shade (۰..۱ — پیش‌فرض ۱) */
+  contrast?: number;
 }
 
 export interface RecolorColors {
@@ -157,6 +167,8 @@ export interface RecolorTarget {
   current: ImageData;
   /** دیباگ: تعداد پیکسل‌های رنگ‌شده در آخرین اعمال */
   lastPainted: number;
+  /** کش میانگین روشنایی برای حالت shade */
+  shadeMeanL?: Map<RecolorRule, number>;
 }
 
 /** وضعیت اولیه را از تکسچر می‌سازد */
@@ -177,6 +189,45 @@ function paintPixel(data: Uint8ClampedArray, idx: number, color: [number, number
   data[idx + 1] = Math.min(255, color[1] * factor);
   data[idx + 2] = Math.min(255, color[2] * factor);
 }
+
+export function hslToRgb(h: number, s: number, l: number): [number, number, number] {
+  if (s <= 0) { const v = Math.round(l * 255); return [v, v, v]; }
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  const f = (t: number) => {
+    if (t < 0) t += 1;
+    if (t > 1) t -= 1;
+    if (t < 1 / 6) return p + (q - p) * 6 * t;
+    if (t < 1 / 2) return q;
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    return p;
+  };
+  const hh = ((h % 360) + 360) % 360 / 360;
+  return [Math.round(f(hh + 1 / 3) * 255), Math.round(f(hh) * 255), Math.round(f(hh - 1 / 3) * 255)];
+}
+
+/** میانگین روشنایی پیکسل‌های داخل ماسک و بازه — کش per target+rule */
+function measureMeanL(target: RecolorTarget, job: Job): number {
+  if (!target.shadeMeanL) target.shadeMeanL = new Map();
+  const cached = target.shadeMeanL.get(job.rule);
+  if (cached !== undefined) return cached;
+  const { masks, original } = target;
+  const W = masks.width, H = masks.height;
+  let sum = 0, n = 0;
+  for (let i = 0; i < W * H; i++) {
+    if (!job.mask[i]) continue;
+    const o = i * 4;
+    if (original.data[o + 3] < 8) continue;
+    const [, s, l] = rgbToHsl(original.data[o], original.data[o + 1], original.data[o + 2]);
+    if (!inRange(rgbToHsl(original.data[o], original.data[o + 1], original.data[o + 2])[0], s, l, job.rule.range)) continue;
+    sum += l; n++;
+  }
+  const mean = n > 0 ? sum / n : job.rule.meanL;
+  target.shadeMeanL.set(job.rule, mean);
+  return mean;
+}
+
+type Job = { mask: Uint8Array; color: [number, number, number]; meanL: number; rule: RecolorRule };
 
 /**
  * بازرنگی اسلات‌ها — A01: هر بار از «تصویر اصلی» شروع می‌شود تا
@@ -214,7 +265,6 @@ export function applyRecolors(
   if (options.eraseBeard) keyPaint.beard = skinC;
 
   // آماده‌سازی ماسک مرکب هر قاعده
-  type Job = { mask: Uint8Array; color: [number, number, number]; meanL: number; rule: RecolorRule };
   const jobs: Job[] = [];
   let painted = 0;
   for (const k of keys) {
@@ -242,8 +292,18 @@ export function applyRecolors(
     for (const job of jobs) {
       if (!job.mask[i]) continue;
       if (!inRange(h, s, l, job.rule.range)) continue;
-      const factor = Math.max(0.45, Math.min(1.6, l / job.meanL));
-      paintPixel(data, o, job.color, factor);
+      if (job.rule.mode === 'shade') {
+        // حفظ سایه‌ی تکسچر: hue/sat از رنگ کاربر، L = L رنگ + دلتای فشرده‌شده
+        const meanL = measureMeanL(target, job);
+        const [hc, sc, lc] = rgbToHsl(job.color[0], job.color[1], job.color[2]);
+        const contrast = job.rule.contrast ?? 1;
+        const li = Math.max(0.04, Math.min(0.985, lc + (l - meanL) * contrast));
+        const rgb = hslToRgb(hc, sc, li);
+        data[o] = rgb[0]; data[o + 1] = rgb[1]; data[o + 2] = rgb[2];
+      } else {
+        const factor = Math.max(0.45, Math.min(1.6, l / job.meanL));
+        paintPixel(data, o, job.color, factor);
+      }
       painted++;
       break; // اولین قاعده‌ی منطبق کافی است
     }

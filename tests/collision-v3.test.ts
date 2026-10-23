@@ -15,6 +15,7 @@ import { makeCloudEvaluator, pointSegDist } from './helpers/qa-run';
 import { buildClipLibrary } from '../src/lib/animation/clips';
 import { detectHumanoidBones, measureRest, retargetClipCustom } from '../src/lib/animation/retarget';
 import { V3_WEAPONS } from '../src/lib/character/weapons3';
+import { computeGripMount } from '../src/lib/character/universal';
 import { AntiClip } from '../src/lib/animation/anticlip';
 import { NodeIO } from '@gltf-transform/core';
 import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
@@ -29,13 +30,12 @@ const BASE = path.join(here, '../public/models/v3/Male_Base.glb');
  *  (جدول V3_WEAPONS تیغه را از مبدأ مدل می‌گیرد — گاردِ روی دست را هم «تیغه»
  *  می‌شمارد و تماس طبیعی دست/مچ را نقض نشان می‌دهد. اینجا مرز دسته/تیغه از
  *  توزیع پهنای واقعی W_Sword.glb استخراج می‌شود — داده‌محور، نه حدس دستی.) */
-function v3WeaponProfile(def: typeof V3_WEAPONS[string], guardTopRaw: number) {
-  const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(def.rot[0], def.rot[1], def.rot[2], 'XYZ'));
-  if (def.tweak?.rx) q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), def.tweak.rx));
-  if (def.tweak?.ry) q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), def.tweak.ry));
-  if (def.tweak?.rz) q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), def.tweak.rz));
-  const pos = new THREE.Vector3(...def.pos);
-  if (def.tweak) pos.add(new THREE.Vector3(def.tweak.px ?? 0, def.tweak.py ?? 0, def.tweak.pz ?? 0));
+function v3WeaponProfile(def: typeof V3_WEAPONS[string], guardTopRaw: number, hand: THREE.Bone) {
+  // چنگ داده‌محور — همان مسیر موتور: نصب از محورهای واقعی اسکلت
+  // (gripCenter/rollDeg/pitchDeg در پروفایل؛ نه pos/rot عددی)
+  const mount = computeGripMount(hand, def);
+  const q = mount.quat;
+  const pos = mount.pos;
   const toHand = (p: THREE.Vector3) =>
     p.clone().multiplyScalar(def.scale).applyQuaternion(q).add(pos);
   const grip = toHand(new THREE.Vector3(0, 0, 0));
@@ -45,6 +45,7 @@ function v3WeaponProfile(def: typeof V3_WEAPONS[string], guardTopRaw: number) {
   const guardA = toHand(new THREE.Vector3(0, guardTopRaw, 0));
   return {
     def,
+    mount,
     grip, bladeA, bladeB, guardA,
     slices: [
       { a: grip, b: bladeA, r: 0.03, zone: 'handle' as const, swept: false },
@@ -122,20 +123,15 @@ beforeAll(async () => {
   // سلاح V3 — دست راست؛ مرز گارد از هندسهٔ واقعی W_Sword
   const guardTopRaw = await extractGuardTop(V3_WEAPONS.sword.file);
   console.log(`[v3] guard top (raw units): ${guardTopRaw.toFixed(3)} — table bladeFrom: ${V3_WEAPONS.sword.bladeFrom[1]}`);
-  prof = v3WeaponProfile(V3_WEAPONS.sword, guardTopRaw);
   handBone = rig.canon['handR'] as THREE.Bone;
   expect(handBone, 'handR bone must map on Universal rig').toBeTruthy();
+  rig.root.updateMatrixWorld(true);
+  prof = v3WeaponProfile(V3_WEAPONS.sword, guardTopRaw, handBone);
   weaponGroup = new THREE.Group();
-  weaponGroup.position.set(...V3_WEAPONS.sword.pos);
-  weaponGroup.rotation.set(...V3_WEAPONS.sword.rot);
-  // توییک پیش‌فرض کالیبره‌شدهٔ دیداری خود سلاح (موتور همین را اعمال می‌کند)
-  const tw = V3_WEAPONS.sword.tweak;
-  if (tw) {
-    if (tw.rx) weaponGroup.rotateX(tw.rx);
-    if (tw.ry) weaponGroup.rotateY(tw.ry);
-    if (tw.rz) weaponGroup.rotateZ(tw.rz);
-    if (tw.px || tw.py || tw.pz) weaponGroup.position.add(new THREE.Vector3(tw.px ?? 0, tw.py ?? 0, tw.pz ?? 0));
-  }
+  // چنگ داده‌محور — همان مسیر موتور (computeGripMount)
+  weaponGroup.position.copy(prof.mount.pos);
+  weaponGroup.quaternion.copy(prof.mount.quat);
+  weaponGroup.scale.setScalar(V3_WEAPONS.sword.scale);
   handBone.add(weaponGroup);
   rig.root.updateMatrixWorld(true);
 });

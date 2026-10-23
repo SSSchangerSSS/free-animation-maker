@@ -64,24 +64,31 @@ export const V3_BODIES: Record<string, V3BodyDef> = {
 
 // ── پروفایل بازرنگی هر بدنه بر اساس متریال‌های واقعی GLB ──────
 // اسلات‌ها: skin→بدن، eye→چشم، hair→مو، beard→ریش، cloth/metal→کیت
+// ⚠️ حالت shade: تکسچرهای Quaternius سایه‌ی دستی دارند — hue/sat
+// از رنگ کاربر و lightness نسبی تکسچر حفظ می‌شود (ضد عروسکی)
 const SKIN_RANGE: RecolorRule = {
   parts: ['superhero_male', 'superhero_female', 'regular_male', 'regular_female'],
   range: { hue: [8, 48], sat: [0.12, 0.9], light: [0.12, 0.97] }, meanL: 0.62,
+  mode: 'shade', contrast: 0.5,
 };
 const EYE_RANGE: RecolorRule = {
   parts: ['eyes'],
   range: { hue: [10, 55], sat: [0.18, 1], light: [0.08, 0.75] }, meanL: 0.35,
+  mode: 'shade', contrast: 0.5,
 };
 const HAIR_RANGE: RecolorRule = {
   parts: ['hair'], range: { hue: [0, 360], sat: [0, 1], light: [0.03, 0.985] }, meanL: 0.42,
+  mode: 'shade', contrast: 0.55,
 };
 const OUTFIT_CLOTH: RecolorRule = {
   parts: ['ranger', 'peasant'],
   range: { hue: [0, 360], sat: [0.08, 1], light: [0.05, 0.95] }, meanL: 0.44,
+  mode: 'shade', contrast: 0.5,
 };
 const OUTFIT_METAL: RecolorRule = {
   parts: ['ranger', 'peasant'],
   range: { hue: [0, 360], sat: [0, 0.14], light: [0.3, 0.97] }, meanL: 0.68,
+  mode: 'shade', contrast: 0.5,
 };
 
 // ── لودر DRACO کش‌شده ────────────────────────────────────────
@@ -143,6 +150,82 @@ function findBones(root: THREE.Object3D): Map<string, THREE.Bone> {
   return map;
 }
 
+// ── چنگ داده‌محور — نصب سلاح از محورهای واقعی اسکلت ──────────
+// مأموریت §۲: هر سلاح فقط gripCenter/roll/pitch در پروفایل دارد؛
+// محور چنگ = امتداد ساعد (اندازه‌گیری‌شده)، نه عدد پراکنده per پوز.
+export interface GripMount { pos: THREE.Vector3; quat: THREE.Quaternion }
+
+export function computeGripMount(hand: THREE.Bone, wdef: V3WeaponDef): GripMount {
+  hand.updateWorldMatrix(true, false);
+  const handPos = new THREE.Vector3().setFromMatrixPosition(hand.matrixWorld);
+  const elbow = hand.parent as THREE.Bone | null;
+  let gripAxis: THREE.Vector3;
+  if (elbow) {
+    elbow.updateWorldMatrix(true, false);
+    gripAxis = handPos.clone().sub(new THREE.Vector3().setFromMatrixPosition(elbow.matrixWorld));
+    if (gripAxis.lengthSq() < 1e-8) gripAxis.set(0, -1, 0);
+    gripAxis.normalize();
+  } else {
+    gripAxis = new THREE.Vector3(0, -1, 0);
+  }
+  // مرجع غلت: محور Y جهانی استخوان دست — پایدار در خانواده‌ی ریگ
+  const rotM = new THREE.Matrix4().extractRotation(hand.matrixWorld);
+  const handQ = new THREE.Quaternion().setFromRotationMatrix(rotM);
+  const handUp = new THREE.Vector3(0, 1, 0).applyQuaternion(handQ);
+  if (Math.abs(handUp.dot(gripAxis)) > 0.92) handUp.set(0, 0, 1).applyQuaternion(handQ);
+  const gx = new THREE.Vector3().crossVectors(handUp, gripAxis);
+  if (gx.lengthSq() < 1e-6) gx.set(1, 0, 0);
+  gx.normalize();
+  const gy = new THREE.Vector3().crossVectors(gripAxis, gx).normalize();
+
+  // غلت حول محور چنگ + پیچ تیغه نسبت به ساعد
+  const roll = (wdef.rollDeg * Math.PI) / 180;
+  const pitch = (wdef.pitchDeg * Math.PI) / 180;
+  const Rroll = new THREE.Quaternion().setFromAxisAngle(gripAxis, roll);
+  const Tx = gx.clone().applyQuaternion(Rroll);            // جانبی (لبه)
+  const Rpitch = new THREE.Quaternion().setFromAxisAngle(gx, pitch);
+  const Ty = gy.clone().applyQuaternion(Rroll).applyQuaternion(Rpitch); // کف‌دستی
+  const Tz = gripAxis.clone().applyQuaternion(Rpitch);      // امتداد تیغه
+
+  // قاب مدل خام: تیغه a، لبه e، عمود c
+  const a = new THREE.Vector3(...(wdef.gripAxisModel ?? [0, 1, 0])).normalize();
+  const e0 = new THREE.Vector3(...(wdef.edgeModel ?? [0, 0, 1]));
+  const e = e0.clone().addScaledVector(a, -e0.dot(a));
+  if (e.lengthSq() < 1e-6) e.set(1, 0, 0);
+  e.normalize();
+  const c = new THREE.Vector3().crossVectors(a, e).normalize();
+  const Bm = new THREE.Matrix4().makeBasis(a, e, c);
+  const Bt = new THREE.Matrix4().makeBasis(Tz, Tx, Ty);
+  const W = Bt.multiply(Bm.invert());
+
+  // مرکز چنگ در جهان → محلی دست
+  const gc = [wdef.gripCenter[0], wdef.gripCenter[1], wdef.gripCenter[2]];
+  const gripCenterWorld = handPos.clone()
+    .addScaledVector(gripAxis, gc[0])
+    .addScaledVector(gx, gc[1])
+    .addScaledVector(gy, gc[2]);
+  const Qhand = new THREE.Quaternion().setFromRotationMatrix(
+    new THREE.Matrix4().extractRotation(hand.matrixWorld),
+  );
+  const QhandInv = Qhand.clone().invert();
+  const pos = gripCenterWorld.clone().sub(handPos).applyQuaternion(QhandInv);
+  const quat = QhandInv.clone().multiply(
+    new THREE.Quaternion().setFromRotationMatrix(W),
+  );
+  return { pos, quat };
+}
+
+// ── اصلاح متریال بدنه/کیت — ضد ظاهر پاستلی عروسکی ────────────
+// GLBهای Quaternius با metalness=۱ خروجی شده‌اند؛ متریال فلزی کامل
+// رنگ بافت را بازتاب محیط می‌کند (شسته‌شده). پارچه/پوست/مو باید
+// دی‌الکتریک باشند؛ فقط قطعات زره‌ای واقعاً فلز می‌مانند.
+const V3_METAL_PART = /pauldron|helmet|armor|buckle|shoulder|greave|bracer/i;
+function fixV3Material(mat: THREE.MeshStandardMaterial, meshName: string): void {
+  const isMetal = V3_METAL_PART.test(meshName);
+  mat.metalness = isMetal ? 0.55 : 0;
+  mat.roughness = isMetal ? 0.45 : 0.9;
+}
+
 // ── ساختار بازرنگی چندتکسچری ─────────────────────────────────
 interface TexTarget {
   recolor: RecolorTarget;
@@ -161,6 +244,11 @@ export interface V3Build {
   /** سازگاری با CharacterBuild موتور */
   animations: THREE.AnimationClip[];
   handBones: { l: THREE.Bone | null; r: THREE.Bone | null };
+  /** زنجیره‌ی بازو برای IK دست دوم (سلاح دو‌دست) */
+  armBones: {
+    l: { upper: THREE.Bone | null; lower: THREE.Bone | null; hand: THREE.Bone | null };
+    r: { upper: THREE.Bone | null; lower: THREE.Bone | null; hand: THREE.Bone | null };
+  };
   chestBone: THREE.Bone | null;
   weapon: V3WeaponHandle | null;
   /** دست/پشت کردن سلاح */
@@ -199,6 +287,7 @@ export async function buildV3Character(cfg: CharConfig): Promise<V3Build> {
     tex.wrapS = src.wrapS; tex.wrapT = src.wrapT;
     tex.needsUpdate = true;
     const m2 = mat.clone(); m2.map = tex; m2.needsUpdate = true;
+    fixV3Material(m2, m.name);
     m.material = m2;
     m.castShadow = true; m.frustumCulled = false;
     meshMats.set(m, m2);
@@ -223,7 +312,13 @@ export async function buildV3Character(cfg: CharConfig): Promise<V3Build> {
       const mat = m.material as THREE.MeshStandardMaterial;
       const tex = new THREE.Texture((mat.map as THREE.Texture).image);
       tex.flipY = false; tex.needsUpdate = true;
+      // ⚠️ colorSpace باید از مبدأ کپی شود وگرنه sRGB به‌صورت linear
+      // تفسیر می‌شود ⇒ همه‌ی رنگ‌ها بیش‌روشنِ صورتی می‌شوند
+      tex.colorSpace = (mat.map as THREE.Texture).colorSpace;
+      tex.wrapS = (mat.map as THREE.Texture).wrapS;
+      tex.wrapT = (mat.map as THREE.Texture).wrapT;
       const m2 = (mat as THREE.MeshStandardMaterial).clone(); m2.map = tex; m2.needsUpdate = true;
+      fixV3Material(m2, m.name);
       rebound.material = m2;
       root.add(rebound);
       // تارگت بازرنگی برای این تکسچر — ماسک فقط برای رستر UV لازم است؛
@@ -304,6 +399,18 @@ export async function buildV3Character(cfg: CharConfig): Promise<V3Build> {
     l: boneMap.get('hand_l') ?? null,
     r: boneMap.get('hand_r') ?? null,
   };
+  const armBones = {
+    l: {
+      upper: boneMap.get('upperarm_l') ?? null,
+      lower: boneMap.get('lowerarm_l') ?? null,
+      hand: boneMap.get('hand_l') ?? null,
+    },
+    r: {
+      upper: boneMap.get('upperarm_r') ?? null,
+      lower: boneMap.get('lowerarm_r') ?? null,
+      hand: boneMap.get('hand_r') ?? null,
+    },
+  };
   const chestBone = boneMap.get('spine_03') ?? boneMap.get('spine_02') ?? null;
   let weaponMode: 'hand' | 'back' = 'hand';
   let weapon: V3WeaponHandle | null = null;
@@ -324,20 +431,43 @@ export async function buildV3Character(cfg: CharConfig): Promise<V3Build> {
       mm.castShadow = true;
       group.add(mm);
     });
-    group.position.set(...wdef.pos);
-    group.rotation.set(...wdef.rot);
-    group.scale.setScalar(wdef.scale);
     const hand = wdef.hand === 'l' ? handBones.l : handBones.r;
-    if (hand) hand.add(group);
+    if (hand) {
+      // چنگ داده‌محور از محورهای واقعی اسکلت (پروفایل: gripCenter/roll/pitch)
+      const mount = computeGripMount(hand, wdef);
+      group.position.copy(mount.pos);
+      group.quaternion.copy(mount.quat);
+      group.scale.setScalar(wdef.scale);
+      hand.add(group);
+    }
     weapon = { def: wdef, group };
-    // نسخه‌ی پشت کمر
+    // نسخه‌ی پشت کمر — نصب داده‌محور در فضای جهان (کاراکتر در T-Pose
+    // ایستاده است): دسته بالای شانه‌ی راست (-X)، تیغه موازی ستون با
+    // شیب کم به چپ (+X)، آفست پشت = عمق سینه + فاصله. تبدیل به قاب
+    // استخوان فقط با ماتریس معکوس — بدون حدس محورهای ریگ.
     if (chestBone) {
       backWeapon = group.clone(true);
       backWeapon.name = 'v3WeaponBack';
       backWeapon.visible = false;
-      // کالیبره‌شده‌ی دیداری — دسته روی شانه‌ی راست، تیغه آویزان پشت
-      backWeapon.position.set(0.03, 0.1, -0.125);
-      backWeapon.rotation.set(0.62, 0.15, -3.0);
+      chestBone.updateWorldMatrix(true, false);
+      const spineWorld = new THREE.Vector3().setFromMatrixPosition(chestBone.matrixWorld);
+      const spineQinv = new THREE.Quaternion().setFromRotationMatrix(
+        new THREE.Matrix4().extractRotation(chestBone.matrixWorld),
+      ).invert();
+      // قاب جهان: up=(0,1,0) — back=(0,0,-1) — راست کاراکتر=(-1,0,0)
+      const bladeDir = new THREE.Vector3(0.2, -1, 0).normalize(); // نوک پایین-چپ
+      const bladeQ = new THREE.Quaternion().setFromUnitVectors(
+        new THREE.Vector3(0, 1, 0), bladeDir,
+      );
+      // غلت: تخت خوابیدن تیغه روی کمر
+      const worldQ = bladeQ.multiply(
+        new THREE.Quaternion().setFromAxisAngle(bladeDir, Math.PI / 2),
+      );
+      const depth = 0.15; // عمق سینه (~10cm) + فاصله
+      const originW = spineWorld.clone()
+        .add(new THREE.Vector3(-0.06, 0.18, -depth));
+      backWeapon.position.copy(originW.clone().sub(spineWorld).applyQuaternion(spineQinv));
+      backWeapon.quaternion.copy(spineQinv.clone().multiply(worldQ));
       chestBone.add(backWeapon);
     }
   }
@@ -393,7 +523,7 @@ export async function buildV3Character(cfg: CharConfig): Promise<V3Build> {
   };
 
   return {
-    root, def, physique: phys, handBones, chestBone, weapon,
+    root, def, physique: phys, handBones, armBones, chestBone, weapon,
     animations: [],
     setWeaponMode: (mode) => {
       weaponMode = mode;

@@ -12,6 +12,7 @@ import { buildV3Character, V3_BODIES, type V3Build } from '../character/universa
 import type { CharConfig } from '../character/types';
 import { buildClipLibrary, ANIM_DEFS } from '../animation/clips';
 import { AntiClip } from '../animation/anticlip';
+import { TwoHandIK } from '../animation/twohandik';
 import { assetUrl } from '../base-path';
 import {
   importExternalModel, detectHumanoidBones, measureRest, measureSourceRest,
@@ -230,6 +231,8 @@ export class Engine {
   private procClips: Record<string, THREE.AnimationClip>;
   /** ضدنفوذ سلاح — فقط بدنه‌های V3 با سلاح در دست */
   private anticlip?: AntiClip;
+  /** IK دست دوم برای سلاح دو‌دست (مأموریت §۲) */
+  private twohand?: TwoHandIK;
 
   private imported?: ImportedModel;
   private lastConfig?: CharConfig;
@@ -423,6 +426,21 @@ export class Engine {
     // this.mixer همان mixer مدل واردی است و قبلاً دوبار جلو می‌رفت
     this.mixer?.update(dt);
     this.character?.update(dt);
+    // IK دست دوم — بعد از انیمیشن، قبل از ضدنفوذ (مچ چپ به grip2)
+    if (this.twohand && this.character && 'weapon' in this.character && this.character.weapon
+      && this.character.getWeaponMode() === 'hand') {
+      const w = this.character.weapon;
+      const handR = w.def.hand === 'l' ? this.character.handBones.l : this.character.handBones.r;
+      if (handR && w.def.grip2) {
+        handR.updateWorldMatrix(true, false);
+        const gm = new THREE.Matrix4().compose(
+          w.group.position, w.group.quaternion, new THREE.Vector3().setScalar(w.def.scale),
+        );
+        const g2 = new THREE.Vector3(...w.def.grip2).applyMatrix4(gm)
+          .applyMatrix4(handR.matrixWorld);
+        this.twohand.update(g2);
+      }
+    }
     // ضدنفوذ — بعد از انیمیشن/چنگ، قبل از رندر
     if (this.anticlip && this.character && 'weapon' in this.character && this.character.weapon
       && this.character.getWeaponMode() === 'hand' && this.kaykitMapping) {
@@ -515,7 +533,7 @@ export class Engine {
       try {
         const rc = retargetClipCustom(this.procClips[def.id], mapping, rest);
         if (!alive()) return;
-        this.registerClip(`proc:${def.id}`, def.label, def.id === 'cast' ? 'magic' : def.id === 'dance' ? 'social' : def.id === 'attack' || def.id === 'hit' || def.id === 'death' ? 'combat' : 'loco', def.loop, 'proc', rc);
+        this.registerClip(`proc:${def.id}`, def.label, def.id === 'cast' ? 'magic' : def.id === 'dance' ? 'social' : def.id === 'attack' || def.id === 'attack2h' || def.id === 'hit' || def.id === 'death' ? 'combat' : 'loco', def.loop, 'proc', rc);
       } catch { /* بی‌خیال کلیپ خراب */ }
     }
     this.kaykitRetargeted = true;
@@ -635,11 +653,17 @@ export class Engine {
       // ضدنفوذ — فقط V3 با سلاح (پروفایل داده‌محور از weapons3)
       this.anticlip?.dispose();
       this.anticlip = undefined;
+      this.twohand = undefined;
       if (cfg.body in V3_BODIES && this.kaykitMapping && 'weapon' in build && build.weapon) {
         this.anticlip = new AntiClip({
           bones: this.kaykitMapping.target,
           bulk: cfg.bulk,
         });
+        // IK دست دوم — فقط سلاح دو‌دست با زنجیره‌ی کامل بازوی چپ
+        const ab = 'armBones' in build ? build.armBones?.l : undefined;
+        if (build.weapon.def.twoHanded && build.weapon.def.grip2 && ab?.upper && ab?.lower && ab?.hand) {
+          this.twohand = new TwoHandIK({ upper: ab.upper, lower: ab.lower, hand: ab.hand });
+        }
       }
       // A09 — بعد از await طولانی کتابخانه، درخواست جدیدتری در راه است؟
       if (this.disposed || seq !== this.buildSeq) return;
@@ -696,9 +720,9 @@ export class Engine {
     if (this.character && this.lastConfig && this.lastConfig.weapon !== 'none') {
       const isV3 = this.lastConfig.body in V3_BODIES;
       this.character.setWeaponMode(weaponModeFor(id, isV3));
-      const clipTweak = gripTweakFor(id, isV3);
-      const weaponTweak = isV3 && 'weapon' in this.character ? this.character.weapon?.def.tweak ?? null : null;
-      this.character.setGripTweak(clipTweak ?? weaponTweak);
+      // چنگ داده‌محور V3 توییک per-کلیپ ندارد (پروفایل در weapons3) —
+      // فقط توییک‌های KayKit قدیمی فعال‌اند
+      this.character.setGripTweak(isV3 ? null : gripTweakFor(id, isV3));
     }
     // A11 — UI از تغییر انیمیشن (شامل بازگشت از one-shot) باخبر می‌شود
     this.onAnimChange?.(id);
@@ -851,6 +875,7 @@ export class Engine {
     this.disposed = true;
     this.anticlip?.dispose();
     this.anticlip = undefined;
+    this.twohand = undefined;
     this.buildSeq++;
     this.importSeq++;
     this.libraryGen++;

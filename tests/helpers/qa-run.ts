@@ -58,6 +58,10 @@ function buildCloud(rig: LoadedRig): { meshData: { mesh: THREE.SkinnedMesh; pos:
     const m = /(?:^|[._-])(l|r)$/i.exec(boneName);
     const side = m ? (m[1].toLowerCase() === 'l' ? 'L' : 'R') : null;
     if (side && /wrist|handslot|hand\b/i.test(boneName)) return `hand${side}`;
+    // انگشتان — بخشی از زنجیره‌ی دست: تماس مجاز «دسته/گارد × انگشتان گیرنده»
+    // باید قابل طبقه‌بندی باشد وگرنه نقض کاذب ثبت می‌شود (Quaternius rig
+    // انگشتان مجزای thumb/index/middle/ring/pinky دارد)
+    if (side && /thumb|index|middle|ring|pinky|finger/i.test(boneName)) return `hand${side}`;
     return null;
   };
   const meshData: ReturnType<typeof buildCloud>['meshData'] = [];
