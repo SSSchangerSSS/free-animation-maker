@@ -11,6 +11,7 @@ import { loadRig, type LoadedRig } from './glb-rig';
 import { buildClipLibrary } from '../../src/lib/animation/clips';
 import { detectHumanoidBones, measureRest, retargetClipCustom } from '../../src/lib/animation/retarget';
 import { V3_WEAPONS } from '../../src/lib/character/weapons3';
+import { computeGripMount } from '../../src/lib/character/universal';
 import { NodeIO } from '@gltf-transform/core';
 import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
 import draco3d from 'draco3d';
@@ -18,13 +19,11 @@ import draco3d from 'draco3d';
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const V3_MODELS = path.join(here, '../../public/models/v3');
 
-export function v3WeaponProfile(def: typeof V3_WEAPONS[string], guardTopRaw: number) {
-  const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(def.rot[0], def.rot[1], def.rot[2], 'XYZ'));
-  if (def.tweak?.rx) q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), def.tweak.rx));
-  if (def.tweak?.ry) q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), def.tweak.ry));
-  if (def.tweak?.rz) q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), def.tweak.rz));
-  const pos = new THREE.Vector3(...def.pos);
-  if (def.tweak) pos.add(new THREE.Vector3(def.tweak.px ?? 0, def.tweak.py ?? 0, def.tweak.pz ?? 0));
+export function v3WeaponProfile(def: typeof V3_WEAPONS[string], guardTopRaw: number, hand: THREE.Bone) {
+  // چنگ داده‌محور — همان مسیر موتور: mount از محورهای واقعی اسکلت
+  const mount = computeGripMount(hand, def);
+  const q = mount.quat;
+  const pos = mount.pos;
   const toHand = (p: THREE.Vector3) =>
     p.clone().multiplyScalar(def.scale).applyQuaternion(q).add(pos);
   const grip = toHand(new THREE.Vector3(0, 0, 0));
@@ -36,6 +35,7 @@ export function v3WeaponProfile(def: typeof V3_WEAPONS[string], guardTopRaw: num
   const guardA = toHand(new THREE.Vector3(0, guardTop, 0));
   return {
     def,
+    mount,
     grip, bladeA, bladeB, guardA,
     slices: [
       { a: grip, b: bladeA, r: 0.03, zone: 'handle' as const, swept: false },
@@ -111,20 +111,13 @@ export async function prepareBody(glbFile: string): Promise<PreparedBody> {
   return { rig, clips, hand };
 }
 
-/** گروه ترنسفورم سلاح در فضای دست (بدون مش — ارزیابی با پروفایل کپسولی)
- *  ⚠️ باید دقیقاً مثل runtime (universal.ts) scale داشته باشد — فرزندان
- *  گروه مثل grip2 با scale ضرب می‌شوند؛ نبودِ آن نقطهٔ چنگ را ~۳٫۸× دور می‌برد */
-export function makeWeaponGroup(def: typeof V3_WEAPONS[string]): THREE.Group {
+/** گروه ترنسفورم سلاح در فضای دست — دقیقاً مثل runtime (universal.ts):
+ *  mount داده‌محور + scale گروه (فرزندان مثل grip2 با scale ضرب می‌شوند) */
+export function makeWeaponGroup(def: typeof V3_WEAPONS[string], hand: THREE.Bone): THREE.Group {
   const g = new THREE.Group();
-  g.position.set(...def.pos);
-  g.rotation.set(...def.rot);
+  const mount = computeGripMount(hand, def);
+  g.position.copy(mount.pos);
+  g.quaternion.copy(mount.quat);
   g.scale.setScalar(def.scale);
-  const tw = def.tweak;
-  if (tw) {
-    if (tw.rx) g.rotateX(tw.rx);
-    if (tw.ry) g.rotateY(tw.ry);
-    if (tw.rz) g.rotateZ(tw.rz);
-    if (tw.px || tw.py || tw.pz) g.position.add(new THREE.Vector3(tw.px ?? 0, tw.py ?? 0, tw.pz ?? 0));
-  }
   return g;
 }

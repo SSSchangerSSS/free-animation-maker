@@ -12,6 +12,7 @@ import { buildV3Character, V3_BODIES, type V3Build } from '../character/universa
 import type { CharConfig } from '../character/types';
 import { buildClipLibrary, ANIM_DEFS } from '../animation/clips';
 import { AntiClip } from '../animation/anticlip';
+import { OffHandGrip } from '../character/offhand-grip';
 import { assetUrl } from '../base-path';
 import {
   importExternalModel, detectHumanoidBones, measureRest, measureSourceRest,
@@ -230,6 +231,10 @@ export class Engine {
   private procClips: Record<string, THREE.AnimationClip>;
   /** ضدنفوذ سلاح — فقط بدنه‌های V3 با سلاح در دست */
   private anticlip?: AntiClip;
+  /** IK دست دوم برای سلاح دو‌دست (مأموریت §۲) */
+  /** چنگ دو‌دستی — دست دوم به grip2؛ برندهٔ بنچمارک tests/offhand-grip.test.ts
+   *  (CCD با ترقوه: قفل ≤0.3cm در همهٔ کلیپ‌ها در برابر 11-19cm تحلیلی دومفصلی) */
+  private offhand?: OffHandGrip;
 
   private imported?: ImportedModel;
   private lastConfig?: CharConfig;
@@ -424,11 +429,10 @@ export class Engine {
     this.mixer?.update(dt);
     this.character?.update(dt);
     // ضدنفوذ — بعد از انیمیشن/چنگ، قبل از رندر
-    const v3Build = this.character && 'offHandGrip' in this.character ? this.character as V3Build : null;
-    if (this.anticlip && v3Build && v3Build.weapon
-      && v3Build.getWeaponMode() === 'hand' && this.kaykitMapping) {
-      const w = v3Build.weapon;
-      const handBone = w.def.hand === 'l' ? v3Build.handBones.l : v3Build.handBones.r;
+    if (this.anticlip && this.character && 'weapon' in this.character && this.character.weapon
+      && this.character.getWeaponMode() === 'hand' && this.kaykitMapping) {
+      const w = this.character.weapon;
+      const handBone = w.def.hand === 'l' ? this.character.handBones.l : this.character.handBones.r;
       if (handBone) {
         handBone.updateWorldMatrix(true, false);
         // تیغه در فضای محلی دست: ماتریس گروه × نقطه‌ی خام
@@ -443,11 +447,13 @@ export class Engine {
         this.anticlip.update(handBone, w.group, from, to);
       }
     }
-    // چنگ دو‌دستی — دست دوم به grip2 (بعد از AntiClip؛ زنجیره‌های مستقل،
-    // وابستگی یک‌طرفه: کلیپ → سلاح → دست دوم — بدون حلقهٔ بازخورد)
-    if (v3Build?.offHandGrip && v3Build.weapon && v3Build.getWeaponMode() === 'hand'
-      && v3Build.weapon.def.twoHanded) {
-      v3Build.offHandGrip.update(dt);
+    // چنگ دو‌دستی — دست دوم به grip2، بعد از AntiClip (اصلاح جلسهٔ ۲):
+    // AntiClip مچ راست را می‌چرخاند و grip2 را جابه‌جا می‌کند؛ دست چپ باید
+    // از وضعیت نهایی سلاح دنبال کند — وابستگی یک‌طرفه: کلیپ → سلاح →
+    // دست دوم، بدون حلقهٔ بازخورد ⇒ حل‌کننده‌ها نجنگند (مأموریت §۲)
+    if (this.offhand && this.character && 'weapon' in this.character && this.character.weapon
+      && this.character.getWeaponMode() === 'hand') {
+      this.offhand.update(dt);
     }
     this.controls.update();
     this.renderer.render(this.scene, this.camera);
@@ -522,7 +528,7 @@ export class Engine {
       try {
         const rc = retargetClipCustom(this.procClips[def.id], mapping, rest);
         if (!alive()) return;
-        this.registerClip(`proc:${def.id}`, def.label, def.id === 'cast' ? 'magic' : def.id === 'dance' ? 'social' : def.id === 'attack' || def.id === 'hit' || def.id === 'death' ? 'combat' : 'loco', def.loop, 'proc', rc);
+        this.registerClip(`proc:${def.id}`, def.label, def.id === 'cast' ? 'magic' : def.id === 'dance' ? 'social' : def.id === 'attack' || def.id === 'attack2h' || def.id === 'hit' || def.id === 'death' ? 'combat' : 'loco', def.loop, 'proc', rc);
       } catch { /* بی‌خیال کلیپ خراب */ }
     }
     this.kaykitRetargeted = true;
@@ -642,11 +648,21 @@ export class Engine {
       // ضدنفوذ — فقط V3 با سلاح (پروفایل داده‌محور از weapons3)
       this.anticlip?.dispose();
       this.anticlip = undefined;
+      this.offhand = undefined;
       if (cfg.body in V3_BODIES && this.kaykitMapping && 'weapon' in build && build.weapon) {
         this.anticlip = new AntiClip({
           bones: this.kaykitMapping.target,
           bulk: cfg.bulk,
         });
+        // چنگ دو‌دستی — CCD با ترقوه (برندهٔ بنچمارک head-to-head):
+        // قفل ≤0.3cm روی همهٔ کلیپ‌ها؛ تحلیلی دومفصلی در idle/walk 11-19cm خطا داشت
+        const ab = 'armBones' in build ? build.armBones?.l : undefined;
+        const g2t = 'grip2Target' in build ? build.grip2Target : null;
+        if (build.weapon.def.twoHanded && g2t && ab?.upper && ab?.lower && ab?.hand) {
+          const chain = [ab.lower, ab.upper];
+          if (ab.clavicle) chain.push(ab.clavicle);
+          this.offhand = new OffHandGrip({ chain, effector: ab.hand, target: g2t });
+        }
       }
       // A09 — بعد از await طولانی کتابخانه، درخواست جدیدتری در راه است؟
       if (this.disposed || seq !== this.buildSeq) return;
@@ -710,9 +726,9 @@ export class Engine {
     if (this.character && this.lastConfig && this.lastConfig.weapon !== 'none') {
       const isV3 = this.lastConfig.body in V3_BODIES;
       this.character.setWeaponMode(weaponModeFor(id, isV3));
-      const clipTweak = gripTweakFor(id, isV3);
-      const weaponTweak = isV3 && 'weapon' in this.character ? this.character.weapon?.def.tweak ?? null : null;
-      this.character.setGripTweak(clipTweak ?? weaponTweak);
+      // چنگ داده‌محور V3 توییک per-کلیپ ندارد (پروفایل در weapons3) —
+      // فقط توییک‌های KayKit قدیمی فعال‌اند
+      this.character.setGripTweak(isV3 ? null : gripTweakFor(id, isV3));
     }
     // A11 — UI از تغییر انیمیشن (شامل بازگشت از one-shot) باخبر می‌شود
     this.onAnimChange?.(id);
@@ -865,6 +881,7 @@ export class Engine {
     this.disposed = true;
     this.anticlip?.dispose();
     this.anticlip = undefined;
+    this.offhand = undefined;
     this.buildSeq++;
     this.importSeq++;
     this.libraryGen++;

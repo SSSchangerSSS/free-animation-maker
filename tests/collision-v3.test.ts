@@ -20,6 +20,7 @@ import { makeCloudEvaluator, pointSegDist } from './helpers/qa-run';
 import { buildClipLibrary } from '../src/lib/animation/clips';
 import { detectHumanoidBones, measureRest, retargetClipCustom } from '../src/lib/animation/retarget';
 import { V3_WEAPONS } from '../src/lib/character/weapons3';
+import { computeGripMount } from '../src/lib/character/universal';
 import { AntiClip } from '../src/lib/animation/anticlip';
 import { NodeIO } from '@gltf-transform/core';
 import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
@@ -31,16 +32,13 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const MODELS = path.join(here, '../public/models/v3');
 
 /** پروفایل سلاح V3 → کپسول‌های hand-local، با ناحیه‌بندی از هندسهٔ واقعی سلاح
- *  (جدول V3_WEAPONS تیغه را از مبدأ مدل می‌گیرد — گاردِ روی دست را هم «تیغه»
- *  می‌شمارد و تماس طبیعی دست/مچ را نقض نشان می‌دهد. مرز دسته/تیغه از
- *  توزیع پهنای واقعی GLB سلاح استخراج می‌شود — داده‌محور، نه حدس دستی.) */
-function v3WeaponProfile(def: typeof V3_WEAPONS[string], guardTopRaw: number) {
-  const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(def.rot[0], def.rot[1], def.rot[2], 'XYZ'));
-  if (def.tweak?.rx) q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), def.tweak.rx));
-  if (def.tweak?.ry) q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), def.tweak.ry));
-  if (def.tweak?.rz) q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), def.tweak.rz));
-  const pos = new THREE.Vector3(...def.pos);
-  if (def.tweak) pos.add(new THREE.Vector3(def.tweak.px ?? 0, def.tweak.py ?? 0, def.tweak.pz ?? 0));
+ *  چنگ داده‌محور — همان مسیر موتور: نصب از محورهای واقعی اسکلت
+ *  (gripCenter/rollDeg/pitchDeg؛ mount per بدنه چون از استخوان دست اندازه می‌شود)
+ *  مرز دسته/تیغه از توزیع پهنای واقعی GLB سلاح استخراج می‌شود. */
+function v3WeaponProfile(def: typeof V3_WEAPONS[string], guardTopRaw: number, hand: THREE.Bone) {
+  const mount = computeGripMount(hand, def);
+  const q = mount.quat;
+  const pos = mount.pos;
   const toHand = (p: THREE.Vector3) =>
     p.clone().multiplyScalar(def.scale).applyQuaternion(q).add(pos);
   const grip = toHand(new THREE.Vector3(0, 0, 0));
@@ -122,18 +120,15 @@ async function prepareBody(glbFile: string) {
   return { rig, clips, hand };
 }
 
-/** گروه ترنسفورم سلاح در فضای دست (بدون مش — ارزیابی با پروفایل کپسولی) */
-function makeWeaponGroup(def: typeof V3_WEAPONS[string]): THREE.Group {
+/** گروه ترنسفورم سلاح در فضای دست — دقیقاً مثل runtime (universal.ts):
+ *  mount داده‌محور از computeGripMount + scale گروه. فرزندان گروه مثل
+ *  grip2 با scale ضرب می‌شوند؛ نبودِ scale نقطهٔ چنگ را ~۳٫۸× دور می‌برد */
+function makeWeaponGroup(def: typeof V3_WEAPONS[string], hand: THREE.Bone): THREE.Group {
   const g = new THREE.Group();
-  g.position.set(...def.pos);
-  g.rotation.set(...def.rot);
-  const tw = def.tweak;
-  if (tw) {
-    if (tw.rx) g.rotateX(tw.rx);
-    if (tw.ry) g.rotateY(tw.ry);
-    if (tw.rz) g.rotateZ(tw.rz);
-    if (tw.px || tw.py || tw.pz) g.position.add(new THREE.Vector3(tw.px ?? 0, tw.py ?? 0, tw.pz ?? 0));
-  }
+  const mount = computeGripMount(hand, def);
+  g.position.copy(mount.pos);
+  g.quaternion.copy(mount.quat);
+  g.scale.setScalar(def.scale);
   return g;
 }
 
@@ -163,7 +158,7 @@ function runClip(
   const offChain = new Set(['upperArmL', 'lowerArmL', 'handL']);
   const twoHanded = !!prof.def.twoHanded;
   const anticlip = anticlipOn ? new AntiClip({ bones: body.rig.canon, bulk: 1 }) : null;
-  const weaponGroup = makeWeaponGroup(prof.def);
+  const weaponGroup = makeWeaponGroup(prof.def, body.hand);
   body.hand.add(weaponGroup);
   body.rig.root.updateMatrixWorld(true);
 
@@ -252,23 +247,28 @@ let male: Awaited<ReturnType<typeof prepareBody>>;
 let female: Awaited<ReturnType<typeof prepareBody>>;
 let guardTopSword: number;
 let guardTopClay: number;
-let profSword: ReturnType<typeof v3WeaponProfile>;
-let profClay: ReturnType<typeof v3WeaponProfile>;
+let profSwordM: ReturnType<typeof v3WeaponProfile>;
+let profSwordF: ReturnType<typeof v3WeaponProfile>;
+let profClayM: ReturnType<typeof v3WeaponProfile>;
+let profClayF: ReturnType<typeof v3WeaponProfile>;
 
 beforeAll(async () => {
   guardTopSword = await extractGuardTop(V3_WEAPONS.sword.file);
   guardTopClay = await extractGuardTop(V3_WEAPONS.sword2h.file);
-  profSword = v3WeaponProfile(V3_WEAPONS.sword, guardTopSword);
-  profClay = v3WeaponProfile(V3_WEAPONS.sword2h, guardTopClay);
   male = await prepareBody('Male_Base.glb');
   female = await prepareBody('Female_Base.glb');
-  console.log(`[v3] guard top sword: ${guardTopSword.toFixed(3)} raw — claymore: ${guardTopClay.toFixed(3)} raw — table bladeFrom clay: ${V3_WEAPONS.sword2h.bladeFrom[1]}`);
+  // mount per بدنه — از استخوان دست همان بدنه اندازه می‌شود (محورهای واقعی اسکلت)
+  profSwordM = v3WeaponProfile(V3_WEAPONS.sword, guardTopSword, male.hand);
+  profSwordF = v3WeaponProfile(V3_WEAPONS.sword, guardTopSword, female.hand);
+  profClayM = v3WeaponProfile(V3_WEAPONS.sword2h, guardTopClay, male.hand);
+  profClayF = v3WeaponProfile(V3_WEAPONS.sword2h, guardTopClay, female.hand);
+  console.log(`[v3] guard top sword: ${guardTopSword.toFixed(3)} raw — claymore: ${guardTopClay.toFixed(3)} raw`);
 });
 
 describe('V3 harness sanity', () => {
   it('weapon profile blade length matches the data-driven def (single scale)', () => {
-    const lenSword = profSword.bladeA.distanceTo(profSword.bladeB);
-    const lenClay = profClay.bladeA.distanceTo(profClay.bladeB);
+    const lenSword = profSwordM.bladeA.distanceTo(profSwordM.bladeB);
+    const lenClay = profClayM.bladeA.distanceTo(profClayM.bladeB);
     console.log(`[v3] blade in hand space — sword: ${(lenSword * 100).toFixed(1)}cm (def ${(V3_WEAPONS.sword.bladeTo[1] * V3_WEAPONS.sword.scale * 100).toFixed(1)}) — claymore: ${(lenClay * 100).toFixed(1)}cm (def ${(V3_WEAPONS.sword2h.bladeTo[1] * V3_WEAPONS.sword2h.scale * 100).toFixed(1)})`);
     // قرارداد درست: raw × scale (یک‌بار). دوبار-مقیاس ۰٫۳۴m می‌داد.
     expect(lenSword).toBeGreaterThan(1.0);
@@ -290,8 +290,8 @@ describe('V3 harness sanity', () => {
 describe('V3 — proc clips × sword 1H (exact geometry, 120Hz)', () => {
   it('male: baseline vs AntiClip-ON, clean clips must stay clean', () => {
     for (const id of ['idle', 'walk', 'guard', 'attack']) {
-      const base = runClip(male, profSword, id, false);
-      const on = runClip(male, profSword, id, true);
+      const base = runClip(male, profSwordM, id, false);
+      const on = runClip(male, profSwordM, id, true);
       console.log(`[v3] male sword ${id.padEnd(8)} baseline: ${fmt(base)} | anticlip: ${fmt(on)}`);
       if (base.violSamples === 0) expect(on.violSamples).toBe(0);
     }
@@ -299,8 +299,8 @@ describe('V3 — proc clips × sword 1H (exact geometry, 120Hz)', () => {
 
   it('female: baseline vs AntiClip-ON, clean clips must stay clean', () => {
     for (const id of ['idle', 'walk', 'guard', 'attack']) {
-      const base = runClip(female, profSword, id, false);
-      const on = runClip(female, profSword, id, true);
+      const base = runClip(female, profSwordF, id, false);
+      const on = runClip(female, profSwordF, id, true);
       console.log(`[v3] female sword ${id.padEnd(8)} baseline: ${fmt(base)} | anticlip: ${fmt(on)}`);
       if (base.violSamples === 0) expect(on.violSamples).toBe(0);
     }
@@ -311,8 +311,8 @@ describe('V3 — proc clips × claymore 2H (exact geometry, 120Hz)', () => {
   // حرکت حملهٔ دو‌دست اختصاصی — ترکیب واقعی موتور برای سلاح دو‌دست
   it('male: idle/walk/guard/attack2h — baseline vs AntiClip-ON', () => {
     for (const id of ['idle', 'walk', 'guard', 'attack2h']) {
-      const base = runClip(male, profClay, id, false);
-      const on = runClip(male, profClay, id, true);
+      const base = runClip(male, profClayM, id, false);
+      const on = runClip(male, profClayM, id, true);
       console.log(`[v3] male clay ${id.padEnd(8)} baseline: ${fmt(base)} | anticlip: ${fmt(on)}`);
       if (base.violSamples === 0) expect(on.violSamples).toBe(0);
     }
@@ -320,8 +320,8 @@ describe('V3 — proc clips × claymore 2H (exact geometry, 120Hz)', () => {
 
   it('female: idle/walk/guard/attack2h — baseline vs AntiClip-ON', () => {
     for (const id of ['idle', 'walk', 'guard', 'attack2h']) {
-      const base = runClip(female, profClay, id, false);
-      const on = runClip(female, profClay, id, true);
+      const base = runClip(female, profClayF, id, false);
+      const on = runClip(female, profClayF, id, true);
       console.log(`[v3] female clay ${id.padEnd(8)} baseline: ${fmt(base)} | anticlip: ${fmt(on)}`);
       if (base.violSamples === 0) expect(on.violSamples).toBe(0);
     }
@@ -330,7 +330,7 @@ describe('V3 — proc clips × claymore 2H (exact geometry, 120Hz)', () => {
   it('claymore × 1H attack clip: INVALID combo — recorded for the record (engine routes 2H weapons to attack2h)', () => {
     // این ترکیب دیگر در موتور مسیر ندارد (play() سلاح دو‌دست را به
     // attack2h می‌فرستد)؛ عدد اینجا فقط سند است — چنگ دست دوم در بُرد نیست
-    const base = runClip(male, profClay, 'attack', false);
+    const base = runClip(male, profClayM, 'attack', false);
     console.log(`[v3] male clay attack ⚠️ INVALID-1H-clip baseline: ${fmt(base)}`);
   }, 240000);
 });
