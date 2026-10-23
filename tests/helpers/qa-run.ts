@@ -57,6 +57,9 @@ function buildCloud(rig: LoadedRig): { meshData: { mesh: THREE.SkinnedMesh; pos:
     if (c) return c;
     const m = /(?:^|[._-])(l|r)$/i.exec(boneName);
     const side = m ? (m[1].toLowerCase() === 'l' ? 'L' : 'R') : null;
+    // انگشتان (ریگ Universal: index_02_l و…) به دستِ همان سمت — رئوس نافذِ
+    // روی دست آزاد باید در گزارش عضو درگیر داشته باشند، نه null
+    if (side && /index|middle|ring|pinky|thumb/i.test(boneName)) return `hand${side}`;
     if (side && /wrist|handslot|hand\b/i.test(boneName)) return `hand${side}`;
     return null;
   };

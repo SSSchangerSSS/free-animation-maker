@@ -5,12 +5,17 @@
 // که موتور می‌خواند؛ تبدیل به کپسول‌های hand-local.
 // AntiClip پروژه (anticlip.ts) مستقیماً در هارنس رانده می‌شود تا
 // اثر واقعی آن با معیار عددی ثبت شود — نه فقط اسکرین‌شات دیداری.
+//
+// پوشش ترکیب‌ها (جلسهٔ ۲): بدنه × سلاح — Male_Base و Female_Base ×
+// sword (1H) و sword2h (Claymore دو‌دست). اعداد ثبت می‌شوند؛ آستانهٔ
+// pass/fail فقط برای ترکیب‌هایی که رفتارشان اندازه‌گیری شده گذاشته
+// می‌شود — بدون ادعای تعمیم به همهٔ سلاح‌ها.
 // ─────────────────────────────────────────────────────────────
 import { describe, it, expect, beforeAll, vi } from 'vitest';
 import * as THREE from 'three';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadRig } from './helpers/glb-rig';
+import { loadRig, type LoadedRig } from './helpers/glb-rig';
 import { makeCloudEvaluator, pointSegDist } from './helpers/qa-run';
 import { buildClipLibrary } from '../src/lib/animation/clips';
 import { detectHumanoidBones, measureRest, retargetClipCustom } from '../src/lib/animation/retarget';
@@ -23,12 +28,12 @@ import draco3d from 'draco3d';
 vi.setConfig({ testTimeout: 240000, hookTimeout: 240000 });
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const BASE = path.join(here, '../public/models/v3/Male_Base.glb');
+const MODELS = path.join(here, '../public/models/v3');
 
 /** پروفایل سلاح V3 → کپسول‌های hand-local، با ناحیه‌بندی از هندسهٔ واقعی سلاح
  *  (جدول V3_WEAPONS تیغه را از مبدأ مدل می‌گیرد — گاردِ روی دست را هم «تیغه»
- *  می‌شمارد و تماس طبیعی دست/مچ را نقض نشان می‌دهد. اینجا مرز دسته/تیغه از
- *  توزیع پهنای واقعی W_Sword.glb استخراج می‌شود — داده‌محور، نه حدس دستی.) */
+ *  می‌شمارد و تماس طبیعی دست/مچ را نقض نشان می‌دهد. مرز دسته/تیغه از
+ *  توزیع پهنای واقعی GLB سلاح استخراج می‌شود — داده‌محور، نه حدس دستی.) */
 function v3WeaponProfile(def: typeof V3_WEAPONS[string], guardTopRaw: number) {
   const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(def.rot[0], def.rot[1], def.rot[2], 'XYZ'));
   if (def.tweak?.rx) q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), def.tweak.rx));
@@ -42,7 +47,9 @@ function v3WeaponProfile(def: typeof V3_WEAPONS[string], guardTopRaw: number) {
   const bladeA = toHand(new THREE.Vector3(...def.bladeFrom));
   const bladeB = toHand(new THREE.Vector3(...def.bladeTo));
   // مرز واقعی گارد: نقطه‌ای روی محور Y خام که پهنای جانبی افت می‌کند
-  const guardA = toHand(new THREE.Vector3(0, guardTopRaw, 0));
+  // (گارد هرگز زیر شروع تیغهٔ جدول نمی‌آید — max با bladeFrom)
+  const guardTop = Math.max(def.bladeFrom[1], guardTopRaw);
+  const guardA = toHand(new THREE.Vector3(0, guardTop, 0));
   return {
     def,
     grip, bladeA, bladeB, guardA,
@@ -58,7 +65,7 @@ function v3WeaponProfile(def: typeof V3_WEAPONS[string], guardTopRaw: number) {
 async function extractGuardTop(weaponFile: string): Promise<number> {
   const io = new NodeIO().registerExtensions(ALL_EXTENSIONS)
     .registerDependencies({ 'draco3d.decoder': await draco3d.createDecoderModule() });
-  const doc = await io.read(path.join(here, '../public/models/v3/weapons', weaponFile));
+  const doc = await io.read(path.join(MODELS, 'weapons', weaponFile));
   let pos: { getCount(): number; getElement(i: number, t: number[]): void } | null = null;
   for (const n of doc.getRoot().listNodes()) {
     const mesh = n.getMesh();
@@ -89,15 +96,9 @@ async function extractGuardTop(weaponFile: string): Promise<number> {
   return guardTop;
 }
 
-let rig: Awaited<ReturnType<typeof loadRig>>;
-let clips: Record<string, THREE.AnimationClip>;
-let prof: ReturnType<typeof v3WeaponProfile>;
-let handBone: THREE.Bone;
-let weaponGroup: THREE.Group;
-
-beforeAll(async () => {
-  rig = await loadRig(BASE);
-  // نرمال‌سازی مثل ساخت V3: قد هدف ۱٫۸۲ و فرود روی زمین
+/** لود بدنه + نرمال‌سازی (قد هدف ۱٫۸۲ و فرود روی زمین) + ریتارگت proc — همان مسیر موتور */
+async function prepareBody(glbFile: string) {
+  const rig = await loadRig(path.join(MODELS, glbFile));
   rig.root.updateMatrixWorld(true);
   const box = new THREE.Box3().setFromObject(rig.root);
   const rawH = Math.max(0.01, box.max.y - box.min.y);
@@ -108,78 +109,120 @@ beforeAll(async () => {
   rig.root.position.y = 0.004 - box2.min.y;
   rig.root.updateMatrixWorld(true);
 
-  // ریتارگت کلیپ‌های proc روی ریگ Universal — همان مسیر موتور
   const mapping = detectHumanoidBones(rig.root);
   const rest = measureRest(rig.root, mapping);
-  // canon map هارنس باید استخوان‌های همین ریگ را بدهد
   for (const [c, b] of Object.entries(mapping.target)) (rig.canon as Record<string, THREE.Bone>)[c] = b;
   const raw = buildClipLibrary();
-  clips = {};
+  const clips: Record<string, THREE.AnimationClip> = {};
   for (const id of Object.keys(raw)) {
     try { clips[id] = retargetClipCustom(raw[id], mapping, rest); } catch { /* کلیپ خراب رد */ }
   }
+  const hand = rig.canon['handR'] as THREE.Bone;
+  expect(hand, `handR bone must map on ${glbFile}`).toBeTruthy();
+  return { rig, clips, hand };
+}
 
-  // سلاح V3 — دست راست؛ مرز گارد از هندسهٔ واقعی W_Sword
-  const guardTopRaw = await extractGuardTop(V3_WEAPONS.sword.file);
-  console.log(`[v3] guard top (raw units): ${guardTopRaw.toFixed(3)} — table bladeFrom: ${V3_WEAPONS.sword.bladeFrom[1]}`);
-  prof = v3WeaponProfile(V3_WEAPONS.sword, guardTopRaw);
-  handBone = rig.canon['handR'] as THREE.Bone;
-  expect(handBone, 'handR bone must map on Universal rig').toBeTruthy();
-  weaponGroup = new THREE.Group();
-  weaponGroup.position.set(...V3_WEAPONS.sword.pos);
-  weaponGroup.rotation.set(...V3_WEAPONS.sword.rot);
-  // توییک پیش‌فرض کالیبره‌شدهٔ دیداری خود سلاح (موتور همین را اعمال می‌کند)
-  const tw = V3_WEAPONS.sword.tweak;
+/** گروه ترنسفورم سلاح در فضای دست (بدون مش — ارزیابی با پروفایل کپسولی) */
+function makeWeaponGroup(def: typeof V3_WEAPONS[string]): THREE.Group {
+  const g = new THREE.Group();
+  g.position.set(...def.pos);
+  g.rotation.set(...def.rot);
+  const tw = def.tweak;
   if (tw) {
-    if (tw.rx) weaponGroup.rotateX(tw.rx);
-    if (tw.ry) weaponGroup.rotateY(tw.ry);
-    if (tw.rz) weaponGroup.rotateZ(tw.rz);
-    if (tw.px || tw.py || tw.pz) weaponGroup.position.add(new THREE.Vector3(tw.px ?? 0, tw.py ?? 0, tw.pz ?? 0));
+    if (tw.rx) g.rotateX(tw.rx);
+    if (tw.ry) g.rotateY(tw.ry);
+    if (tw.rz) g.rotateZ(tw.rz);
+    if (tw.px || tw.py || tw.pz) g.position.add(new THREE.Vector3(tw.px ?? 0, tw.py ?? 0, tw.pz ?? 0));
   }
-  handBone.add(weaponGroup);
-  rig.root.updateMatrixWorld(true);
-});
+  return g;
+}
 
-function runClip(clipId: string, anticlipOn: boolean, dt = 1 / 120) {
-  const clip = clips[clipId];
+interface RunResult {
+  violSamples: number; totalSamples: number; maxDepth: number; sumDepth: number;
+  longestRun: number; byPart: Record<string, number>;
+  /** کمینهٔ فاصلهٔ تیغه (ناحیهٔ blade) تا رئوس غیرمجاز — حاشیهٔ اطمینان (m) */
+  minBladeClearance: number;
+  /** نقض‌ها به تفکیک ناحیه — handle/blade (سالم‌سازی تماس مجاز) */
+  byZone: Record<string, number>;
+  /** نقض فقط در زیرگام swept (بین فریم‌ها) — نه در پوز نهایی */
+  sweptOnlySamples: number;
+}
+
+/** پخش کلیپ روی بدنهٔ آماده + ارزیابی دقیق روی ابر رئوس (120Hz) */
+function runClip(
+  body: { rig: LoadedRig; clips: Record<string, THREE.AnimationClip>; hand: THREE.Bone },
+  prof: ReturnType<typeof v3WeaponProfile>,
+  clipId: string,
+  anticlipOn: boolean,
+  dt = 1 / 120,
+): RunResult {
+  const clip = body.clips[clipId];
   if (!clip) throw new Error(`retargeted clip missing: ${clipId}`);
-  const cloudEval = makeCloudEvaluator(rig);
+  const cloudEval = makeCloudEvaluator(body.rig);
   const gripChain = new Set(['upperArmR', 'lowerArmR', 'handR']);
-  const anticlip = anticlipOn ? new AntiClip({ bones: rig.canon, bulk: 1 }) : null;
+  const offChain = new Set(['upperArmL', 'lowerArmL', 'handL']);
+  const twoHanded = !!prof.def.twoHanded;
+  const anticlip = anticlipOn ? new AntiClip({ bones: body.rig.canon, bulk: 1 }) : null;
+  const weaponGroup = makeWeaponGroup(prof.def);
+  body.hand.add(weaponGroup);
+  body.rig.root.updateMatrixWorld(true);
 
-  const mixer = new THREE.AnimationMixer(rig.root);
+  const mixer = new THREE.AnimationMixer(body.rig.root);
   const action = mixer.clipAction(clip);
   action.setLoop(THREE.LoopRepeat, Infinity);
   action.play();
 
-  const res = { violSamples: 0, totalSamples: 0, maxDepth: 0, sumDepth: 0, longestRun: 0, byPart: {} as Record<string, number>, maxCorrDeg: 0 };
+  const res: RunResult = { violSamples: 0, totalSamples: 0, maxDepth: 0, sumDepth: 0, longestRun: 0, byPart: {}, minBladeClearance: Infinity, byZone: {}, sweptOnlySamples: 0 };
   let run = 0;
   const n = Math.max(2, Math.ceil(clip.duration / dt));
+  let prevHandM: THREE.Matrix4 | null = null;
+  const wslices: { a: THREE.Vector3; b: THREE.Vector3; r: number; zone: 'handle' | 'blade'; swept: boolean }[] = [];
+  const p0 = new THREE.Vector3(); const q0 = new THREE.Quaternion(); const s0 = new THREE.Vector3();
+  const p1 = new THREE.Vector3(); const q1 = new THREE.Quaternion(); const s1 = new THREE.Vector3();
   for (let i = 0; i < n; i++) {
     mixer.update(dt);
-    rig.root.updateMatrixWorld(true);
+    body.rig.root.updateMatrixWorld(true);
     if (anticlip) {
-      anticlip.update(handBone, weaponGroup, prof.bladeA.clone(), prof.bladeB.clone());
-      rig.root.updateMatrixWorld(true);
+      anticlip.update(body.hand, weaponGroup, prof.bladeA.clone(), prof.bladeB.clone());
+      body.rig.root.updateMatrixWorld(true);
     }
     const cloud = cloudEval.deform();
-    const m = handBone.matrixWorld;
-    // برش‌ها در فضای جهان — از prof.slices (ناحیه‌بندی داده‌محور: دسته/گارد/تیغه)
-    const segsW = prof.slices.map((s) => ({
-      a: s.a.clone().applyMatrix4(m),
-      b: s.b.clone().applyMatrix4(m),
-      r: s.r, zone: s.zone,
-    }));
-    let worst = 0; let worstPart: string | null = null;
+    const m = body.hand.matrixWorld;
+    // برش‌ها در فضای جهان — پوز فعلی + زیرگام‌های swept نسبت به فریم قبل
+    // (مأموریت §۲: مسیر طی‌شدهٔ کل تیغه بررسی شود، نه فقط فریم پایانی)
+    wslices.length = 0;
+    for (const s of prof.slices) {
+      wslices.push({ a: s.a.clone().applyMatrix4(m), b: s.b.clone().applyMatrix4(m), r: s.r, zone: s.zone, swept: false });
+    }
+    const handM = body.hand.matrixWorld;
+    if (prevHandM) {
+      prevHandM.decompose(p0, q0, s0);
+      handM.decompose(p1, q1, s1);
+      const dist = p0.distanceTo(p1);
+      if (dist > 0.035) {
+        const K = Math.min(4, Math.ceil(dist / 0.035));
+        for (let k = 1; k < K; k++) {
+          const f = k / K;
+          const mi = new THREE.Matrix4().compose(p0.clone().lerp(p1, f), q0.clone().slerp(q1, f), s0);
+          for (const s of prof.slices) {
+            wslices.push({ a: s.a.clone().applyMatrix4(mi), b: s.b.clone().applyMatrix4(mi), r: s.r, zone: s.zone, swept: true });
+          }
+        }
+      }
+    }
+    prevHandM = handM.clone();
+    let worst = 0; let worstPart: string | null = null; let worstZone = ''; let anyFinal = false; let anySwept = false;
     for (let vi = 0; vi < cloud.verts.length; vi++) {
       const part = cloud.part[vi];
       const p = cloud.verts[vi];
-      for (const seg of segsW) {
-        // تماس مجاز صریح: دسته/گارد × زنجیرهٔ دست گیرنده
-        if (seg.zone === 'handle' && gripChain.has(part ?? '')) continue;
+      for (const seg of wslices) {
+        // تماس مجاز صریح: دسته/گارد × زنجیرهٔ دست گیرنده (+ دست دوم فقط سلاح دو‌دست)
+        if (seg.zone === 'handle' && (gripChain.has(part ?? '') || (twoHanded && offChain.has(part ?? '')))) continue;
         const d = pointSegDist(p, seg.a, seg.b);
+        if (seg.zone === 'blade' && !seg.swept && d < res.minBladeClearance) res.minBladeClearance = d;
         const depth = seg.r - d;
-        if (depth > 0.012 && depth > worst) { worst = depth; worstPart = part; }
+        if (depth > 0.012 && depth > worst) { worst = depth; worstPart = part; worstZone = seg.zone; }
+        if (depth > 0.012) { if (seg.swept) anySwept = true; else anyFinal = true; }
       }
     }
     if (worst > 0) {
@@ -189,50 +232,98 @@ function runClip(clipId: string, anticlipOn: boolean, dt = 1 / 120) {
       res.maxDepth = Math.max(res.maxDepth, worst);
       res.sumDepth += worst;
       if (worstPart) res.byPart[worstPart] = (res.byPart[worstPart] ?? 0) + 1;
+      if (worstZone) res.byZone[worstZone] = (res.byZone[worstZone] ?? 0) + 1;
+      if (!anyFinal && anySwept) res.sweptOnlySamples++;
     } else run = 0;
     res.totalSamples++;
   }
   action.stop();
   mixer.stopAllAction();
   anticlip?.dispose();
+  body.hand.remove(weaponGroup);
   return res;
 }
 
+const fmt = (r: RunResult) =>
+  `viol=${String(r.violSamples).padStart(4)}/${r.totalSamples} max=${(r.maxDepth * 100).toFixed(1)}cm sum=${(r.sumDepth * 100).toFixed(0)} clearance=${r.minBladeClearance === Infinity ? '—' : (r.minBladeClearance * 100).toFixed(1) + 'cm'}${r.sweptOnlySamples ? ' sweptOnly=' + r.sweptOnlySamples : ''} parts=${JSON.stringify(r.byPart)}${Object.keys(r.byZone).length ? ' zone=' + JSON.stringify(r.byZone) : ''}`;
+
+// ── آماده‌سازی مشترک ─────────────────────────────────────────
+let male: Awaited<ReturnType<typeof prepareBody>>;
+let female: Awaited<ReturnType<typeof prepareBody>>;
+let guardTopSword: number;
+let guardTopClay: number;
+let profSword: ReturnType<typeof v3WeaponProfile>;
+let profClay: ReturnType<typeof v3WeaponProfile>;
+
+beforeAll(async () => {
+  guardTopSword = await extractGuardTop(V3_WEAPONS.sword.file);
+  guardTopClay = await extractGuardTop(V3_WEAPONS.sword2h.file);
+  profSword = v3WeaponProfile(V3_WEAPONS.sword, guardTopSword);
+  profClay = v3WeaponProfile(V3_WEAPONS.sword2h, guardTopClay);
+  male = await prepareBody('Male_Base.glb');
+  female = await prepareBody('Female_Base.glb');
+  console.log(`[v3] guard top sword: ${guardTopSword.toFixed(3)} raw — claymore: ${guardTopClay.toFixed(3)} raw — table bladeFrom clay: ${V3_WEAPONS.sword2h.bladeFrom[1]}`);
+});
+
 describe('V3 harness sanity', () => {
   it('weapon profile blade length matches the data-driven def (single scale)', () => {
-    const len = prof.bladeA.distanceTo(prof.bladeB);
-    console.log(`[v3] blade length in hand space: ${(len * 100).toFixed(1)}cm — def: ${(V3_WEAPONS.sword.bladeTo[1] * V3_WEAPONS.sword.scale * 100).toFixed(1)}cm`);
+    const lenSword = profSword.bladeA.distanceTo(profSword.bladeB);
+    const lenClay = profClay.bladeA.distanceTo(profClay.bladeB);
+    console.log(`[v3] blade in hand space — sword: ${(lenSword * 100).toFixed(1)}cm (def ${(V3_WEAPONS.sword.bladeTo[1] * V3_WEAPONS.sword.scale * 100).toFixed(1)}) — claymore: ${(lenClay * 100).toFixed(1)}cm (def ${(V3_WEAPONS.sword2h.bladeTo[1] * V3_WEAPONS.sword2h.scale * 100).toFixed(1)})`);
     // قرارداد درست: raw × scale (یک‌بار). دوبار-مقیاس ۰٫۳۴m می‌داد.
-    expect(len).toBeGreaterThan(1.0);
-    expect(len).toBeLessThan(1.5);
+    expect(lenSword).toBeGreaterThan(1.0);
+    expect(lenSword).toBeLessThan(1.5);
+    expect(lenClay).toBeGreaterThan(1.0);
+    expect(lenClay).toBeLessThan(2.0);
   });
-  it('volume/cloud extracted from V3 skinned meshes', () => {
-    const ev = makeCloudEvaluator(rig);
-    rig.root.updateMatrixWorld(true);
-    const cloud = ev.deform();
-    console.log(`[v3] cloud verts: ${cloud.verts.length}, mapped parts: ${cloud.part.filter(Boolean).length}`);
-    expect(cloud.verts.length).toBeGreaterThan(3000);
-    expect(cloud.part.filter(Boolean).length).toBeGreaterThan(2000);
+  it('volume/cloud extracted from both V3 bodies (male + female)', () => {
+    for (const [name, body] of [['male', male], ['female', female]] as const) {
+      body.rig.root.updateMatrixWorld(true);
+      const cloud = makeCloudEvaluator(body.rig).deform();
+      console.log(`[v3] ${name} cloud verts: ${cloud.verts.length}, mapped parts: ${cloud.part.filter(Boolean).length}`);
+      expect(cloud.verts.length).toBeGreaterThan(3000);
+      expect(cloud.part.filter(Boolean).length).toBeGreaterThan(2000);
+    }
   });
 });
 
-describe('V3 — proc clips × sword (exact geometry, 120Hz)', () => {
-  it('measures baseline vs AntiClip-ON and records honest numbers', () => {
+describe('V3 — proc clips × sword 1H (exact geometry, 120Hz)', () => {
+  it('male: baseline vs AntiClip-ON, clean clips must stay clean', () => {
     for (const id of ['idle', 'walk', 'guard', 'attack']) {
-      const base = runClip(id, false);
-      const on = runClip(id, true);
-      console.log(
-        `[v3] ${id.padEnd(8)} baseline: viol=${String(base.violSamples).padStart(4)}/${base.totalSamples} max=${(base.maxDepth * 100).toFixed(1)}cm sum=${(base.sumDepth * 100).toFixed(0)} parts=${JSON.stringify(base.byPart)} | ` +
-        `anticlip: viol=${String(on.violSamples).padStart(4)}/${on.totalSamples} max=${(on.maxDepth * 100).toFixed(1)}cm sum=${(on.sumDepth * 100).toFixed(0)} parts=${JSON.stringify(on.byPart)}`,
-      );
-      // کلیپ تمیز نباید با AntiClip کثیف شود
+      const base = runClip(male, profSword, id, false);
+      const on = runClip(male, profSword, id, true);
+      console.log(`[v3] male sword ${id.padEnd(8)} baseline: ${fmt(base)} | anticlip: ${fmt(on)}`);
       if (base.violSamples === 0) expect(on.violSamples).toBe(0);
     }
   }, 240000);
 
-  it('documents at least one real finding for the record', () => {
-    // این تست جای عدد اثبات نیست — عدد واقعی در خروجی بالا و
-    // docs/character-quality-progress.md ثبت می‌شود.
-    expect(Object.keys(clips).length).toBeGreaterThan(10);
-  });
+  it('female: baseline vs AntiClip-ON, clean clips must stay clean', () => {
+    for (const id of ['idle', 'walk', 'guard', 'attack']) {
+      const base = runClip(female, profSword, id, false);
+      const on = runClip(female, profSword, id, true);
+      console.log(`[v3] female sword ${id.padEnd(8)} baseline: ${fmt(base)} | anticlip: ${fmt(on)}`);
+      if (base.violSamples === 0) expect(on.violSamples).toBe(0);
+    }
+  }, 240000);
+});
+
+describe('V3 — proc clips × claymore 2H (exact geometry, 120Hz)', () => {
+  it('male: baseline vs AntiClip-ON (numbers recorded — thresholds set after data)', () => {
+    for (const id of ['idle', 'walk', 'guard', 'attack']) {
+      const base = runClip(male, profClay, id, false);
+      const on = runClip(male, profClay, id, true);
+      console.log(`[v3] male clay ${id.padEnd(8)} baseline: ${fmt(base)} | anticlip: ${fmt(on)}`);
+      // فقط نگهبان «آلوده‌نکردن کلیپ تمیز» — سقف پایین و ثابت
+      if (base.violSamples === 0) expect(on.violSamples).toBe(0);
+    }
+  }, 240000);
+
+  it('female: baseline vs AntiClip-ON (numbers recorded — thresholds set after data)', () => {
+    for (const id of ['idle', 'walk', 'guard', 'attack']) {
+      const base = runClip(female, profClay, id, false);
+      const on = runClip(female, profClay, id, true);
+      console.log(`[v3] female clay ${id.padEnd(8)} baseline: ${fmt(base)} | anticlip: ${fmt(on)}`);
+      if (base.violSamples === 0) expect(on.violSamples).toBe(0);
+    }
+  }, 240000);
 });
