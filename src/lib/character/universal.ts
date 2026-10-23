@@ -232,7 +232,7 @@ export async function buildV3Character(cfg: CharConfig): Promise<V3Build> {
       const W = img.width, H = img.height;
       const maskRoot = new THREE.Group(); maskRoot.add(rebound);
       let masks: MaskSet;
-      try { masks = buildPartMasks(maskRoot, W, H); } catch (e) { root.add(rebound); return; }
+      try { masks = buildPartMasks(maskRoot, W, H); } catch { root.add(rebound); return; }
       root.add(rebound);
       const rt = createRecolorTarget(tex, masks);
       const slotRule: Partial<Record<RecolorKey, RecolorRule[]>> = {};
